@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import html
 import logging
 import sys
+import tempfile
 from pathlib import Path
 
 import gradio as gr
 
+from app.batcher import make_batches
 from app.config import CONFIG
+from app.epub_io import read_epub_info, unpack_epub
+from app.extractor import extract_text_blocks, parse_xhtml
 from app.job_store import JobStore
+from app.translator import BatchTranslator
 from app.utils import mask_secret, sanitize_filename
 from app.worker import WorkerManager
 
@@ -24,6 +30,7 @@ LANGUAGES = [
     "Italian",
     "Portuguese",
 ]
+PREVIEW_MAX_TRANSLATE_BLOCKS = 40
 
 
 def setup_logging() -> None:
@@ -59,6 +66,9 @@ def create_and_start_job(
     user_prompt: str,
     translate_titles: bool,
     translate_footnotes: bool,
+    translation_scope_label: str,
+    start_block,
+    end_block,
 ):
     if epub_file is None:
         raise gr.Error("请先上传 EPUB 文件。")
@@ -72,6 +82,7 @@ def create_and_start_job(
         if failure_policy_label.startswith("keep_original")
         else "stop_on_failed_chapter"
     )
+    translate_start_block, translate_end_block = _scope_bounds(translation_scope_label, start_block, end_block)
     job = store.create_job(
         uploaded_path=source_path,
         original_filename=sanitize_filename(original_filename),
@@ -86,6 +97,8 @@ def create_and_start_job(
         translate_titles=translate_titles,
         translate_footnotes=translate_footnotes,
         translate_toc=False,
+        translate_start_block=translate_start_block,
+        translate_end_block=translate_end_block,
     )
     message = worker.start(job.job_id)
     return f"已创建任务：{job.job_id}\n{message}", jobs_table(), job.job_id
@@ -124,6 +137,137 @@ def _uploaded_file_info(file_value) -> tuple[Path, str]:
         path = Path(file_value.name)
         return path, getattr(file_value, "orig_name", path.name)
     raise gr.Error("无法识别上传文件。")
+
+
+def preview_epub(epub_file, translate_titles: bool, translate_footnotes: bool):
+    if epub_file is None:
+        raise gr.Error("请先上传 EPUB 文件。")
+    source_path, original_filename = _uploaded_file_info(epub_file)
+    rows = _collect_preview_rows(source_path, translate_titles, translate_footnotes)
+    summary = "\n".join(
+        [
+            f"文件: {original_filename}",
+            f"可翻译文本块: {len(rows)}",
+            "EPUB 没有固定页码；这里用全书文本块编号作为预览和范围翻译依据。",
+        ]
+    )
+    return summary, rows[:200]
+
+
+def preview_translation(
+    epub_file,
+    target_language: str,
+    mode_label: str,
+    batch_size,
+    max_batch_chars,
+    max_batch_retries,
+    user_prompt: str,
+    translate_titles: bool,
+    translate_footnotes: bool,
+    start_block,
+    end_block,
+):
+    if epub_file is None:
+        raise gr.Error("请先上传 EPUB 文件。")
+    start, end = _clean_range(start_block, end_block)
+    if end - start + 1 > PREVIEW_MAX_TRANSLATE_BLOCKS:
+        raise gr.Error(f"预览翻译最多一次 {PREVIEW_MAX_TRANSLATE_BLOCKS} 个文本块，请缩小范围。")
+
+    source_path, _ = _uploaded_file_info(epub_file)
+    rows = _collect_preview_rows(source_path, translate_titles, translate_footnotes)
+    selected_rows = [row for row in rows if start <= row[0] <= end]
+    if not selected_rows:
+        raise gr.Error("这个范围内没有可翻译文本块。")
+
+    blocks = [
+        row[5]
+        for row in _collect_preview_blocks(source_path, translate_titles, translate_footnotes)
+        if start <= row[0] <= end
+    ]
+    translator = BatchTranslator(CONFIG)
+    translations: dict[str, str] = {}
+    for batch in make_batches(blocks, max_items=int(batch_size), max_chars=int(max_batch_chars)):
+        translations.update(
+            translator.translate_batch(
+                batch,
+                target_language=target_language,
+                mode="append_block" if mode_label.startswith("append_block") else "replace",
+                user_prompt=user_prompt,
+                max_retries=int(max_batch_retries),
+            )
+        )
+    preview_rows = [
+        [row[0], row[1], row[3], row[4], translations.get(row[5].block_id, "")]
+        for row in _collect_preview_blocks(source_path, translate_titles, translate_footnotes)
+        if start <= row[0] <= end
+    ]
+    return _translation_preview_html(preview_rows), preview_rows
+
+
+def _collect_preview_rows(source_path: Path, translate_titles: bool, translate_footnotes: bool) -> list[list]:
+    return [
+        [global_index, chapter_index, href, tag, text]
+        for global_index, chapter_index, href, tag, text, _block in _collect_preview_blocks(
+            source_path, translate_titles, translate_footnotes
+        )
+    ]
+
+
+def _collect_preview_blocks(source_path: Path, translate_titles: bool, translate_footnotes: bool) -> list[list]:
+    with tempfile.TemporaryDirectory(dir=CONFIG.cache_dir) as tmp:
+        work_dir = Path(tmp) / "work"
+        unpack_epub(source_path, work_dir)
+        epub_info = read_epub_info(work_dir)
+        rows = []
+        global_index = 1
+        for chapter in epub_info.chapters:
+            soup = parse_xhtml(chapter.abs_path)
+            chapter_id = f"chapter_{chapter.index:03d}"
+            blocks = extract_text_blocks(
+                soup,
+                chapter_id,
+                translate_titles=translate_titles,
+                translate_footnotes=translate_footnotes,
+            )
+            for block in blocks:
+                rows.append([global_index, chapter.index, chapter.href, block.tag, block.text, block])
+                global_index += 1
+        return rows
+
+
+def _translation_preview_html(rows: list[list]) -> str:
+    parts = [
+        "<table style='width:100%;border-collapse:collapse'>",
+        "<thead><tr><th>编号</th><th>章节</th><th>标签</th><th>原文</th><th>译文</th></tr></thead><tbody>",
+    ]
+    for global_index, chapter_index, tag, source, translation in rows:
+        parts.append(
+            "<tr>"
+            f"<td style='vertical-align:top;border:1px solid #ddd;padding:6px'>{global_index}</td>"
+            f"<td style='vertical-align:top;border:1px solid #ddd;padding:6px'>{chapter_index}</td>"
+            f"<td style='vertical-align:top;border:1px solid #ddd;padding:6px'>{html.escape(tag)}</td>"
+            f"<td style='vertical-align:top;border:1px solid #ddd;padding:6px'>{html.escape(source)}</td>"
+            f"<td style='vertical-align:top;border:1px solid #ddd;padding:6px'>{html.escape(translation)}</td>"
+            "</tr>"
+        )
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def _scope_bounds(scope_label: str, start_block, end_block) -> tuple[int | None, int | None]:
+    if not scope_label.startswith("仅翻译"):
+        return None, None
+    return _clean_range(start_block, end_block)
+
+
+def _clean_range(start_block, end_block) -> tuple[int, int]:
+    start = int(start_block or 1)
+    end = int(end_block or start)
+    if start < 1 or end < 1:
+        raise gr.Error("文本块编号必须大于 0。")
+    if end < start:
+        raise gr.Error("结束编号不能小于开始编号。")
+    return start, end
 
 
 def job_detail(job_id: str):
@@ -253,6 +397,35 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     translate_titles = gr.Checkbox(label="翻译标题", value=True)
                     translate_footnotes = gr.Checkbox(label="翻译脚注", value=True)
+                with gr.Accordion("上传预览和小范围翻译预览", open=True):
+                    preview_button = gr.Button("预览 EPUB 内容")
+                    epub_preview_summary = gr.Textbox(label="EPUB 预览摘要", lines=3)
+                    epub_preview_table = gr.Dataframe(
+                        headers=["文本块编号", "章节 index", "章节 href", "标签", "原文"],
+                        interactive=False,
+                    )
+                    with gr.Row():
+                        preview_start_block = gr.Number(
+                            label="预览起始文本块编号（近似第几页）",
+                            value=1,
+                            precision=0,
+                        )
+                        preview_end_block = gr.Number(
+                            label="预览结束文本块编号（近似第几页）",
+                            value=8,
+                            precision=0,
+                        )
+                    preview_translate_button = gr.Button("预览这段翻译效果")
+                    translation_preview_html = gr.HTML(label="翻译效果预览")
+                    translation_preview_table = gr.Dataframe(
+                        headers=["文本块编号", "章节 index", "标签", "原文", "译文"],
+                        interactive=False,
+                    )
+                translation_scope = gr.Radio(
+                    ["全书翻译", "仅翻译上面文本块范围"],
+                    label="正式任务翻译范围",
+                    value="全书翻译",
+                )
                 start_button = gr.Button("开始翻译", variant="primary")
                 create_message = gr.Textbox(label="创建结果", lines=3)
                 created_job_id = gr.Textbox(label="新任务 job id")
@@ -328,8 +501,33 @@ def build_ui() -> gr.Blocks:
                 user_prompt,
                 translate_titles,
                 translate_footnotes,
+                translation_scope,
+                preview_start_block,
+                preview_end_block,
             ],
             outputs=[create_message, jobs, created_job_id],
+        )
+        preview_button.click(
+            preview_epub,
+            inputs=[epub_file, translate_titles, translate_footnotes],
+            outputs=[epub_preview_summary, epub_preview_table],
+        )
+        preview_translate_button.click(
+            preview_translation,
+            inputs=[
+                epub_file,
+                target_language,
+                mode,
+                batch_size,
+                max_batch_chars,
+                max_batch_retries,
+                user_prompt,
+                translate_titles,
+                translate_footnotes,
+                preview_start_block,
+                preview_end_block,
+            ],
+            outputs=[translation_preview_html, translation_preview_table],
         )
         refresh_jobs.click(jobs_table, outputs=jobs)
         detail_button.click(job_detail, inputs=detail_job_id, outputs=[detail_summary, chapter_table, detail_download])

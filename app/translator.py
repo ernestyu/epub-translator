@@ -11,6 +11,11 @@ from app.llm_client import LLMClient
 from app.models import TextBlock
 from app.utils import atomic_write_json, now_ts, read_json
 
+try:
+    from json_repair import repair_json
+except ImportError:  # pragma: no cover - exercised when optional dependency is missing
+    repair_json = None
+
 
 logger = logging.getLogger("epub-translator-web.translator")
 
@@ -80,6 +85,20 @@ class BatchTranslator:
             except TranslationValidationError as exc:
                 previous_error = str(exc)
                 logger.warning("Invalid LLM JSON attempt=%s reason=%s", attempt, previous_error)
+        if len(blocks) > 1:
+            logger.warning("Batch failed after retries; splitting into single-item fallback requests")
+            translations: dict[str, str] = {}
+            for block in blocks:
+                translations.update(
+                    self.translate_batch(
+                        [block],
+                        target_language=target_language,
+                        mode=mode,
+                        user_prompt=user_prompt,
+                        max_retries=max_retries,
+                    )
+                )
+            return translations
         raise TranslationValidationError(previous_error or "LLM response did not validate")
 
     def _messages(
@@ -95,6 +114,7 @@ class BatchTranslator:
             "",
             "Return JSON in this exact format:",
             '{"items":[{"id":"same id as input","translation":"translated text"}]}',
+            "Escape all quotation marks and control characters inside translation strings.",
             "",
         ]
         if user_prompt:
@@ -199,11 +219,27 @@ def _loads_with_light_repair(raw: str) -> Any:
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and start < end:
+        candidate = text[start : end + 1]
         try:
-            return json.loads(text[start : end + 1])
+            return json.loads(candidate)
         except json.JSONDecodeError as exc:
+            repaired = _repair_json(candidate)
+            if repaired is not None:
+                return repaired
             raise TranslationValidationError(f"invalid JSON after light repair: {exc}") from exc
     raise TranslationValidationError("response is not valid JSON")
+
+
+def _repair_json(candidate: str) -> Any | None:
+    if repair_json is None:
+        return None
+    try:
+        repaired = repair_json(candidate)
+        if isinstance(repaired, str):
+            return json.loads(repaired)
+        return repaired
+    except Exception:
+        return None
 
 
 def _looks_like_xml_document(text: str) -> bool:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.config import Config
 from app.epub_io import read_epub_info, unpack_epub
-from app.extractor import parse_xhtml, title_from_soup
+from app.extractor import extract_text_blocks, parse_xhtml, title_from_soup
 from app.models import ChapterState, JobState
 from app.utils import atomic_write_json, compact_ts, ensure_within, now_ts, read_json, sanitize_filename
 
@@ -31,6 +31,8 @@ class JobStore:
         translate_titles: bool,
         translate_footnotes: bool,
         translate_toc: bool,
+        translate_start_block: int | None = None,
+        translate_end_block: int | None = None,
     ) -> JobState:
         job_id = f"{compact_ts()}-{uuid.uuid4().hex[:8]}"
         job_dir = self.config.jobs_dir / job_id
@@ -51,8 +53,18 @@ class JobStore:
         for chapter in epub_info.chapters:
             chapter_id = f"chapter_{chapter.index:03d}"
             title = None
+            text_blocks = 0
             try:
-                title = title_from_soup(parse_xhtml(chapter.abs_path))
+                soup = parse_xhtml(chapter.abs_path)
+                title = title_from_soup(soup)
+                text_blocks = len(
+                    extract_text_blocks(
+                        soup,
+                        chapter_id,
+                        translate_titles=translate_titles,
+                        translate_footnotes=translate_footnotes,
+                    )
+                )
             except Exception:
                 title = None
             chapters.append(
@@ -63,6 +75,7 @@ class JobStore:
                     abs_path=str(chapter.abs_path),
                     translated_path=str(translated_dir / f"{chapter_id}.xhtml"),
                     title=title,
+                    text_blocks=text_blocks,
                 )
             )
 
@@ -89,6 +102,8 @@ class JobStore:
             translate_titles=translate_titles,
             translate_footnotes=translate_footnotes,
             translate_toc=translate_toc,
+            translate_start_block=translate_start_block,
+            translate_end_block=translate_end_block,
             created_at=created_at,
             updated_at=created_at,
             total_chapters=len(chapters),

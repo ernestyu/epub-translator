@@ -1,6 +1,7 @@
 beautifulsoup4
 gradio
 jinja2>=3.1.5
+json-repair
 lxml
 openai
 pydantic

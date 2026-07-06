@@ -80,6 +80,8 @@ class JobState:
     done_text_blocks: int = 0
     last_error: str | None = None
     cancel_requested: bool = False
+    translate_start_block: int | None = None
+    translate_end_block: int | None = None
     chapters: list[ChapterState] = field(default_factory=list)
 
     @classmethod

@@ -38,6 +38,11 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(TranslationValidationError):
             parse_and_validate(json.dumps({"items": []}), [{"id": "a", "text": "one"}])
 
+    def test_parse_and_validate_repairs_missing_comma_when_possible(self) -> None:
+        raw = '{"items":[{"id":"a","translation":"一"} {"id":"b","translation":"二"}]}'
+        result = parse_and_validate(raw, [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}])
+        self.assertEqual(result, {"a": "一", "b": "二"})
+
     def test_epub_unpack_spine_extract_insert_and_repackage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -102,6 +107,45 @@ class CoreTests(unittest.TestCase):
                 "bilingual-translation",
                 Path(finished.chapters[0].translated_path).read_text(encoding="utf-8"),
             )
+
+    def test_worker_can_translate_only_selected_block_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "book.epub"
+            _create_sample_epub(source)
+            config = _test_config(tmp_path / "data")
+            store = JobStore(config)
+            job = store.create_job(
+                uploaded_path=source,
+                original_filename="book.epub",
+                source_language="English",
+                target_language="Simplified Chinese",
+                mode="append_block",
+                batch_size=2,
+                max_batch_chars=6000,
+                max_batch_retries=3,
+                chapter_failure_policy="stop_on_failed_chapter",
+                user_prompt=None,
+                translate_titles=True,
+                translate_footnotes=True,
+                translate_toc=False,
+                translate_start_block=2,
+                translate_end_block=2,
+            )
+
+            original_translator = worker_module.BatchTranslator
+            worker_module.BatchTranslator = FakeBatchTranslator
+            try:
+                worker_module.run_job(config, store, job.job_id)
+            finally:
+                worker_module.BatchTranslator = original_translator
+
+            finished = store.load(job.job_id)
+            self.assertEqual(finished.status, "finished")
+            first_chapter = Path(finished.chapters[0].translated_path).read_text(encoding="utf-8")
+            self.assertIn("T:Hello world.", first_chapter)
+            self.assertNotIn("T:Chapter One", first_chapter)
+            self.assertNotIn("T:First item.", first_chapter)
 
 
 class FakeBatchTranslator:

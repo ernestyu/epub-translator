@@ -62,6 +62,7 @@ def run_job(config: Config, store: JobStore, job_id: str, failed_only: bool = Fa
         job.started_at = job.started_at or now_ts()
         job.last_error = None
         store.save(job)
+        chapter_offsets = _chapter_offsets(job)
         _append_job_log(job, "job started")
 
         for chapter in job.chapters:
@@ -78,7 +79,7 @@ def run_job(config: Config, store: JobStore, job_id: str, failed_only: bool = Fa
                 return
 
             try:
-                _process_chapter(job, chapter.index, translator, store)
+                _process_chapter(job, chapter.index, translator, store, chapter_offsets.get(chapter.index, 0))
             except JobCancelled:
                 job = store.load(job_id)
                 _mark_cancelled(job, store)
@@ -144,7 +145,13 @@ def _should_skip_chapter(status: str) -> bool:
     return False
 
 
-def _process_chapter(job: JobState, chapter_index: int, translator: BatchTranslator, store: JobStore) -> None:
+def _process_chapter(
+    job: JobState,
+    chapter_index: int,
+    translator: BatchTranslator,
+    store: JobStore,
+    chapter_global_offset: int,
+) -> None:
     job = store.load(job.job_id)
     chapter = job.chapters[chapter_index]
     chapter.status = "running"
@@ -153,12 +160,13 @@ def _process_chapter(job: JobState, chapter_index: int, translator: BatchTransla
     store.save(job)
 
     soup = parse_xhtml(Path(chapter.abs_path))
-    blocks = extract_text_blocks(
+    all_blocks = extract_text_blocks(
         soup,
         chapter.id,
         translate_titles=job.translate_titles,
         translate_footnotes=job.translate_footnotes,
     )
+    blocks = _select_blocks_for_range(all_blocks, job.translate_start_block, job.translate_end_block, chapter_global_offset)
     batches = make_batches(blocks, max_items=job.batch_size, max_chars=job.max_batch_chars)
     translations: dict[str, str] = {}
 
@@ -169,6 +177,13 @@ def _process_chapter(job: JobState, chapter_index: int, translator: BatchTransla
     chapter.failed_batches = 0
     store.save(job)
     _append_job_log(job, f"chapter started index={chapter.index} href={chapter.href} blocks={len(blocks)} batches={len(batches)}")
+
+    if not blocks:
+        chapter.status = "skipped"
+        chapter.finished_at = now_ts()
+        store.save(job)
+        _append_job_log(job, f"chapter skipped index={chapter.index} reason=no selected text blocks")
+        return
 
     for batch_index, batch in enumerate(batches):
         job = store.load(job.job_id)
@@ -224,6 +239,45 @@ def _write_chapter_batch_state(job: JobState, chapter_index: int, batch_index: i
     batches[batch_index]["attempts"] += 1
     batches[batch_index]["error"] = error
     atomic_write_json(state_path, payload)
+
+
+def _chapter_offsets(job: JobState) -> dict[int, int]:
+    offsets: dict[int, int] = {}
+    current = 0
+    for chapter in job.chapters:
+        offsets[chapter.index] = current
+        try:
+            soup = parse_xhtml(Path(chapter.abs_path))
+            count = len(
+                extract_text_blocks(
+                    soup,
+                    chapter.id,
+                    translate_titles=job.translate_titles,
+                    translate_footnotes=job.translate_footnotes,
+                )
+            )
+        except Exception:
+            count = chapter.text_blocks
+        current += count
+    return offsets
+
+
+def _select_blocks_for_range(
+    blocks: list,
+    start_block: int | None,
+    end_block: int | None,
+    chapter_global_offset: int,
+) -> list:
+    if start_block is None and end_block is None:
+        return blocks
+    start = start_block or 1
+    end = end_block or 10**12
+    selected = []
+    for local_index, block in enumerate(blocks, start=1):
+        global_index = chapter_global_offset + local_index
+        if start <= global_index <= end:
+            selected.append(block)
+    return selected
 
 
 def _mark_cancelled(job: JobState, store: JobStore) -> None:
