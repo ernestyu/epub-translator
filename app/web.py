@@ -14,9 +14,9 @@ from app.i18n import SUPPORTED_UI_LANGUAGES, TRANSLATIONS, translate
 from app.job_store import JobStore
 from app.preview import build_translated_preview_epub, chapter_summaries, epub_reader_html
 from app.settings import (
-    FAILURE_POLICY_LABELS,
-    OUTPUT_MODE_LABELS,
     PROVIDER_BASE_URLS,
+    failure_policy_labels,
+    output_mode_labels,
     output_mode_label,
     failure_policy_label,
     save_env_settings,
@@ -108,7 +108,7 @@ def create_and_start_job(
         translate_start_block=translate_start_block,
         translate_end_block=translate_end_block,
     )
-    message = worker.start(job.job_id)
+    message = worker.start(job.job_id, ui_language=CONFIG.ui_language)
     return t("created_job", job_id=job.job_id, message=message), jobs_table(), job.job_id
 
 
@@ -186,7 +186,12 @@ def preview_epub(epub_file):
         chapters=len(chapters),
         chars=sum(chapter.chars for chapter in chapters),
     )
-    return summary, chapter_rows, gr.update(choices=choices, value=choices[0] if choices else None), epub_reader_html(source_path, original_filename)
+    return (
+        summary,
+        chapter_rows,
+        gr.update(choices=choices, value=choices[0] if choices else None),
+        epub_reader_html(source_path, original_filename, CONFIG.ui_language),
+    )
 
 
 def preview_translation(
@@ -226,7 +231,7 @@ def preview_translation(
         start=start_char,
         end=start_char + char_count,
     )
-    return message, epub_reader_html(preview_epub_path, f"Translated preview - chapter {chapter_index}")
+    return message, epub_reader_html(preview_epub_path, f"Translated preview - chapter {chapter_index}", CONFIG.ui_language)
 
 
 def _scope_bounds(
@@ -325,7 +330,7 @@ def job_detail(job_id: str):
     try:
         job = store.load(job_id.strip())
     except Exception as exc:
-        return f"无法读取任务：{exc}", [], None
+        return t("load_job_failed", error=exc), [], None
     scope = (
         t("full_book")
         if job.translate_start_block is None
@@ -373,13 +378,13 @@ def refresh_selected_job(job_id: str):
 def resume_job(job_id: str):
     if not job_id:
         raise gr.Error(t("select_job_first"))
-    return worker.start(job_id.strip(), failed_only=False)
+    return worker.start(job_id.strip(), failed_only=False, ui_language=CONFIG.ui_language)
 
 
 def rerun_failed(job_id: str):
     if not job_id:
         raise gr.Error(t("select_job_first"))
-    return worker.start(job_id.strip(), failed_only=True)
+    return worker.start(job_id.strip(), failed_only=True, ui_language=CONFIG.ui_language)
 
 
 def cancel_job(job_id: str):
@@ -486,6 +491,8 @@ def switch_ui_language(ui_language: str):
         t("last_error"),
     ]
     preview_headers = [t("chapter_index"), t("title"), t("chapter_href"), t("text_blocks"), t("translatable_chars")]
+    output_choices = output_mode_labels(CONFIG.ui_language)
+    failure_choices = failure_policy_labels(CONFIG.ui_language)
     return (
         gr.update(value=f"# {t('app_title')}"),
         gr.update(label=t("ui_language")),
@@ -518,8 +525,8 @@ def switch_ui_language(ui_language: str):
         gr.update(label=t("job_detail")),
         gr.update(headers=chapter_headers),
         gr.update(label=t("download_result")),
-        gr.update(label=t("output_mode")),
-        gr.update(label=t("failure_policy")),
+        gr.update(label=t("output_mode"), choices=output_choices, value=output_mode_label(CONFIG.default_output_mode, CONFIG.ui_language)),
+        gr.update(label=t("failure_policy"), choices=failure_choices, value=failure_policy_label(CONFIG.default_chapter_failure_policy, CONFIG.ui_language)),
         gr.update(label=t("translate_titles")),
         gr.update(label=t("translate_footnotes")),
         gr.update(label=t("provider")),
@@ -621,14 +628,14 @@ def build_ui() -> gr.Blocks:
             with gr.Tab(t("tab_settings")):
                 with gr.Accordion(t("translation_defaults"), open=True):
                     output_mode_setting = gr.Radio(
-                        list(OUTPUT_MODE_LABELS.values()),
+                        output_mode_labels(CONFIG.ui_language),
                         label=t("output_mode"),
-                        value=output_mode_label(CONFIG.default_output_mode),
+                        value=output_mode_label(CONFIG.default_output_mode, CONFIG.ui_language),
                     )
                     failure_policy_setting = gr.Radio(
-                        list(FAILURE_POLICY_LABELS.values()),
+                        failure_policy_labels(CONFIG.ui_language),
                         label=t("failure_policy"),
-                        value=failure_policy_label(CONFIG.default_chapter_failure_policy),
+                        value=failure_policy_label(CONFIG.default_chapter_failure_policy, CONFIG.ui_language),
                     )
                     with gr.Row():
                         translate_titles_setting = gr.Checkbox(label=t("translate_titles"), value=CONFIG.default_translate_titles)

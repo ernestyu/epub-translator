@@ -10,6 +10,7 @@ from app.batcher import make_batches
 from app.config import Config
 from app.epub_io import read_epub_info, unpack_epub
 from app.extractor import apply_translations, extract_text_blocks, inject_bilingual_style, parse_xhtml, save_xhtml, title_from_soup
+from app.i18n import translate
 from app.models import TextBlock
 from app.packager import _write_epub
 from app.translator import BatchTranslator
@@ -29,7 +30,7 @@ class PreviewChapter:
         return f"{self.index} | {clean_title} | {self.chars} chars | {self.href}"
 
 
-def epub_reader_html(epub_path: Path, title: str = "EPUB Preview") -> str:
+def epub_reader_html(epub_path: Path, title: str = "EPUB Preview", ui_language: str = "zh") -> str:
     encoded = base64.b64encode(epub_path.read_bytes()).decode("ascii")
     inner = f"""<!doctype html>
 <html>
@@ -48,8 +49,8 @@ def epub_reader_html(epub_path: Path, title: str = "EPUB Preview") -> str:
 </head>
 <body>
   <div class="bar">
-    <button id="prev" title="Previous page">上一页</button>
-    <button id="next" title="Next page">下一页</button>
+    <button id="prev" title="{html.escape(translate(ui_language, "reader_prev"))}">{html.escape(translate(ui_language, "reader_prev"))}</button>
+    <button id="next" title="{html.escape(translate(ui_language, "reader_next"))}">{html.escape(translate(ui_language, "reader_next"))}</button>
     <span>{html.escape(title)}</span>
     <span id="status">Loading...</span>
   </div>
@@ -63,6 +64,7 @@ def epub_reader_html(epub_path: Path, title: str = "EPUB Preview") -> str:
       return bytes.buffer;
     }}
     const status = document.getElementById("status");
+    status.textContent = "{html.escape(translate(ui_language, "reader_loading"))}";
     try {{
       const book = ePub(b64ToArrayBuffer("{encoded}"));
       const rendition = book.renderTo("viewer", {{ width: "100%", height: "100%", spread: "none" }});
@@ -72,9 +74,9 @@ def epub_reader_html(epub_path: Path, title: str = "EPUB Preview") -> str:
       rendition.on("relocated", location => {{
         status.textContent = location && location.start ? location.start.href : "";
       }});
-      book.ready.then(() => {{ status.textContent = "Ready"; }});
+      book.ready.then(() => {{ status.textContent = "{html.escape(translate(ui_language, "reader_ready"))}"; }});
     }} catch (error) {{
-      status.textContent = "Preview failed: " + error;
+      status.textContent = "{html.escape(translate(ui_language, "reader_failed"))}: " + error;
     }}
   </script>
 </body>

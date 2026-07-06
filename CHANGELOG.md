@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.2 - 2026-07-06
+
+### Changed
+
+- Completed the English UI pass by removing mixed Chinese/English labels from runtime UI code outside the translation dictionary.
+- Localized EPUB reader controls, worker status messages, settings option labels, and job-loading errors.
+- Added a Chinese README and language links between English and Chinese documentation.
+- Expanded Docker build and deployment instructions.
+- Added project acknowledgements, including a note that the current implementation does not depend on `oomol-lab/epub-translator` at runtime.
+
+### Fixed
+
+- Fixed mixed-language output mode and chapter failure policy labels in the English UI.
+- Fixed mixed-language Previous/Next controls inside the EPUB preview reader.
+
 ## 0.1.1 - 2026-07-06
 
 ### Changed

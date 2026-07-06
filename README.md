@@ -1,5 +1,7 @@
 # EPUB Translator Web
 
+[中文文档](README.zh-CN.md) | English
+
 Local, Docker-friendly EPUB bilingual translation web app with checkpointed background jobs.
 
 EPUB Translator Web lets you upload an EPUB, preview it in the browser, translate selected chapter ranges for a quick visual check, and then run a full-book translation using an OpenAI-compatible LLM API. It keeps the EPUB/XHTML structure under program control: the LLM only translates plain text and returns JSON.
@@ -54,11 +56,71 @@ Generated books are written to:
 ./data/output
 ```
 
+## Docker Build and Deployment
+
+### Recommended: Docker Compose
+
+Build and start the service:
+
+```bash
+docker compose up -d --build
+```
+
+Check logs:
+
+```bash
+docker compose logs -f epub-translator
+```
+
+Stop the service:
+
+```bash
+docker compose down
+```
+
+Rebuild after code changes:
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+The included `docker-compose.yml` mounts local runtime data:
+
+```yaml
+volumes:
+  - ./data:/data
+```
+
+This means jobs, logs, cache, and output EPUB files survive container recreation.
+
+### Manual Docker Build
+
+Build the image:
+
+```bash
+docker build -t epub-translator-web:0.1.2 .
+```
+
+Run it:
+
+```bash
+docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.2
+```
+
+For Linux hosts using local LLM services, make sure `host.docker.internal` is available. The Compose file already includes:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
 ## UI Workflow
 
 The app has three tabs:
 
 1. **New Translation**
+   - Switch UI language immediately at the top of the tab.
    - Upload an EPUB.
    - Preview the real EPUB rendering.
    - Select a chapter and a character range for sample translation.
@@ -74,10 +136,9 @@ The app has three tabs:
    - Configure translation defaults.
    - Configure LLM provider, base URL, API key, model, and context window.
    - Refresh models from the provider and test the selected model.
-   - Choose UI language (`zh` or `en`). A language selector is also available at the top of the New Translation tab for first-time users.
    - Save settings to `.env`.
 
-The UI language setting is persisted to `.env`. Most visible controls switch immediately. Refresh the page if your browser keeps old tab titles.
+The UI language selector is at the top of the New Translation tab. The setting is persisted to `.env`. Most visible controls switch immediately. Refresh the page if your browser keeps old tab titles.
 
 ## Environment Variables
 
@@ -156,9 +217,15 @@ python -m unittest discover -s tests
 - EPUB pagination is reader-dependent, so sample preview selection uses chapter + character range instead of fixed page numbers.
 - The app supports OpenAI-compatible APIs. Provider-specific APIs outside that interface are not implemented.
 
+## Acknowledgements
+
+- Thanks to [oomol-lab/epub-translator](https://github.com/oomol-lab/epub-translator). This project started from a simple prototype that used that package and was informed by its EPUB translation ideas.
+- The current implementation does **not** depend on `oomol-lab/epub-translator` at runtime. EPUB parsing, checkpointing, batching, and repackaging are implemented in this repository.
+- EPUB rendering preview is powered by [EPUB.js](https://github.com/futurepress/epub.js).
+
 ## Version
 
-Current version: `0.1.1`
+Current version: `0.1.2`
 
 ## License
 

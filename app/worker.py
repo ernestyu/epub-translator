@@ -7,6 +7,7 @@ from pathlib import Path
 from app.batcher import make_batches
 from app.config import Config
 from app.extractor import apply_translations, extract_text_blocks, parse_xhtml, save_xhtml
+from app.i18n import translate
 from app.job_store import JobStore
 from app.models import JobState
 from app.packager import package_job
@@ -28,10 +29,10 @@ class WorkerManager:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
-    def start(self, job_id: str, failed_only: bool = False) -> str:
+    def start(self, job_id: str, failed_only: bool = False, ui_language: str = "zh") -> str:
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return "已有任务正在后台运行，当前第一版仅支持单任务执行。"
+                return translate(ui_language, "worker_busy")
             self._thread = threading.Thread(
                 target=self._run_guarded,
                 args=(job_id, failed_only),
@@ -39,7 +40,7 @@ class WorkerManager:
                 name=f"job-{job_id}",
             )
             self._thread.start()
-            return f"任务 {job_id} 已启动。"
+            return translate(ui_language, "worker_started", job_id=job_id)
 
     def _run_guarded(self, job_id: str, failed_only: bool) -> None:
         try:

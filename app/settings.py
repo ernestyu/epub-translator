@@ -4,21 +4,19 @@ import os
 from pathlib import Path
 
 from app.config import CONFIG, Config
-from app.i18n import normalize_language
+from app.i18n import normalize_language, translate
 from app.utils import atomic_write_text
 
 
-OUTPUT_MODE_LABELS = {
-    "append_block": "append_block: original + translated paragraph / 原文段落后追加译文",
-    "replace": "replace: translation only / 只保留译文",
+OUTPUT_MODE_KEYS = {
+    "append_block": "output_append_block",
+    "replace": "output_replace",
 }
-OUTPUT_MODE_VALUES = {value: key for key, value in OUTPUT_MODE_LABELS.items()}
 
-FAILURE_POLICY_LABELS = {
-    "stop_on_failed_chapter": "stop_on_failed_chapter: stop on failure / 失败则停止任务",
-    "keep_original_on_failed_chapter": "keep_original_on_failed_chapter: keep original and continue / 失败章节保留原文并继续",
+FAILURE_POLICY_KEYS = {
+    "stop_on_failed_chapter": "policy_stop",
+    "keep_original_on_failed_chapter": "policy_keep_original",
 }
-FAILURE_POLICY_VALUES = {value: key for key, value in FAILURE_POLICY_LABELS.items()}
 
 PROVIDER_BASE_URLS = {
     "OpenAI": "https://api.openai.com/v1",
@@ -32,20 +30,36 @@ PROVIDER_BASE_URLS = {
 }
 
 
-def output_mode_label(value: str) -> str:
-    return OUTPUT_MODE_LABELS.get(value, OUTPUT_MODE_LABELS["append_block"])
+def output_mode_labels(language: str) -> list[str]:
+    return [translate(language, key) for key in OUTPUT_MODE_KEYS.values()]
+
+
+def output_mode_label(value: str, language: str = "zh") -> str:
+    return translate(language, OUTPUT_MODE_KEYS.get(value, OUTPUT_MODE_KEYS["append_block"]))
 
 
 def output_mode_value(label: str) -> str:
-    return OUTPUT_MODE_VALUES.get(label, "append_block")
+    for language in ("zh", "en"):
+        for value, key in OUTPUT_MODE_KEYS.items():
+            if label == translate(language, key):
+                return value
+    return "append_block"
 
 
-def failure_policy_label(value: str) -> str:
-    return FAILURE_POLICY_LABELS.get(value, FAILURE_POLICY_LABELS["keep_original_on_failed_chapter"])
+def failure_policy_labels(language: str) -> list[str]:
+    return [translate(language, key) for key in FAILURE_POLICY_KEYS.values()]
+
+
+def failure_policy_label(value: str, language: str = "zh") -> str:
+    return translate(language, FAILURE_POLICY_KEYS.get(value, FAILURE_POLICY_KEYS["keep_original_on_failed_chapter"]))
 
 
 def failure_policy_value(label: str) -> str:
-    return FAILURE_POLICY_VALUES.get(label, "keep_original_on_failed_chapter")
+    for language in ("zh", "en"):
+        for value, key in FAILURE_POLICY_KEYS.items():
+            if label == translate(language, key):
+                return value
+    return "keep_original_on_failed_chapter"
 
 
 def update_runtime_config(
