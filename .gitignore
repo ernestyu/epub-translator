@@ -1,0 +1,53 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/input/
+data/output/
+data/cache/
+data/logs/
+
+# Keep data directory structure if needed
+!data/
+!data/.gitkeep
+
+# Gradio temporary files
+gradio_cached_examples/
+flagged/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# EPUB / generated files
+*.epub
+*.mobi
+*.azw3
+*.pdf

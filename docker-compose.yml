@@ -1,0 +1,16 @@
+services:
+  epub-translator:
+    build: .
+    container_name: epub-translator
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    environment:
+      - LLM_API_KEY=dummy
+      - LLM_BASE_URL=http://host.docker.internal:11434/v1
+      - LLM_MODEL=qwen2.5:14b
+      - TOKEN_ENCODING=o200k_base
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
