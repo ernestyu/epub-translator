@@ -20,6 +20,7 @@ class Config:
     llm_base_url: str
     llm_api_key: str
     llm_model: str
+    llm_context_window: int
     llm_timeout_seconds: int
     llm_temperature: float
     llm_top_p: float
@@ -45,6 +46,7 @@ class Config:
             llm_base_url=os.getenv("LLM_BASE_URL", "http://host.docker.internal:11434/v1"),
             llm_api_key=os.getenv("LLM_API_KEY", "ollama"),
             llm_model=os.getenv("LLM_MODEL", "qwen3:32b"),
+            llm_context_window=int(os.getenv("LLM_CONTEXT_WINDOW", "8192")),
             llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "300")),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
             llm_top_p=float(os.getenv("LLM_TOP_P", "0.8")),
@@ -62,6 +64,17 @@ class Config:
     def ensure_dirs(self) -> None:
         for path in (self.jobs_dir, self.output_dir, self.cache_dir, self.logs_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def llm_reserved_output_tokens(self) -> int:
+        return max(1024, min(4096, int(self.llm_context_window * 0.36)))
+
+    @property
+    def llm_max_input_tokens(self) -> int:
+        prompt_overhead = max(700, int(self.llm_context_window * 0.1))
+        safety_margin = max(500, int(self.llm_context_window * 0.1))
+        budget = self.llm_context_window - self.llm_reserved_output_tokens - prompt_overhead - safety_margin
+        return max(512, budget)
 
 
 CONFIG = Config.from_env()

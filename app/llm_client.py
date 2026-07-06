@@ -30,6 +30,7 @@ class LLMClient:
                     messages=messages,
                     temperature=self.config.llm_temperature,
                     top_p=self.config.llm_top_p,
+                    max_tokens=self.config.llm_reserved_output_tokens,
                 )
                 logger.info("LLM request completed attempt=%s", attempt)
                 return response.choices[0].message.content or ""

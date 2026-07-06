@@ -167,7 +167,12 @@ def _process_chapter(
         translate_footnotes=job.translate_footnotes,
     )
     blocks = _select_blocks_for_range(all_blocks, job.translate_start_block, job.translate_end_block, chapter_global_offset)
-    batches = make_batches(blocks, max_items=job.batch_size, max_chars=job.max_batch_chars)
+    batches = make_batches(
+        blocks,
+        max_items=job.batch_size,
+        max_chars=job.max_batch_chars,
+        max_tokens=store.config.llm_max_input_tokens,
+    )
     translations: dict[str, str] = {}
 
     chapter.text_blocks = len(blocks)

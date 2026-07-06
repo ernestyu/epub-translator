@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from app.config import Config
 from app.llm_client import LLMClient
 from app.models import TextBlock
+from app.tokenizer import count_tokens
 from app.utils import atomic_write_json, now_ts, read_json
 
 try:
@@ -61,14 +63,24 @@ class BatchTranslator:
         cache_path = self._cache_path(target_language, mode, user_prompt, input_items)
         cached = self._read_cache(cache_path, input_items)
         if cached is not None:
+            logger.info("Batch cache hit items=%s estimated_input_tokens=%s", len(blocks), _estimated_input_tokens(input_items))
             return cached
 
         previous_error: str | None = None
         for attempt in range(1, max_retries + 1):
             messages = self._messages(target_language, input_items, user_prompt, previous_error)
+            started = time.perf_counter()
             raw = self.client.chat(messages)
             try:
                 translations = parse_and_validate(raw, input_items)
+                elapsed = time.perf_counter() - started
+                logger.info(
+                    "Batch translated items=%s estimated_input_tokens=%s elapsed=%.2fs attempt=%s",
+                    len(blocks),
+                    _estimated_input_tokens(input_items),
+                    elapsed,
+                    attempt,
+                )
                 atomic_write_json(
                     cache_path,
                     {
@@ -250,3 +262,7 @@ def _looks_like_xml_document(text: str) -> bool:
 def _looks_like_explanation(text: str) -> bool:
     lowered = text.strip().lower()
     return lowered.startswith("here is") or lowered.startswith("the translation") or lowered.startswith("i translated")
+
+
+def _estimated_input_tokens(input_items: list[dict[str, str]]) -> int:
+    return sum(count_tokens(item["text"]) + 24 for item in input_items)

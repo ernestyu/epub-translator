@@ -13,6 +13,7 @@ from app.extractor import apply_translations, extract_text_blocks, parse_xhtml, 
 from app.job_store import JobStore
 from app.models import TextBlock
 from app.packager import _write_epub
+from app.preview import select_blocks_by_char_range
 from app.translator import TranslationValidationError, parse_and_validate
 import app.worker as worker_module
 
@@ -26,6 +27,23 @@ class CoreTests(unittest.TestCase):
         ]
         batches = make_batches(blocks, max_items=2, max_chars=6)
         self.assertEqual([[block.block_id for block in batch] for batch in batches], [["a", "b"], ["c"]])
+
+    def test_batcher_respects_token_budget(self) -> None:
+        blocks = [
+            TextBlock(block_id="a", tag="p", text="hello " * 80),
+            TextBlock(block_id="b", tag="p", text="world " * 80),
+        ]
+        batches = make_batches(blocks, max_items=8, max_chars=10000, max_tokens=90)
+        self.assertEqual([[block.block_id for block in batch] for batch in batches], [["a"], ["b"]])
+
+    def test_select_blocks_by_char_range_keeps_whole_overlapping_blocks(self) -> None:
+        blocks = [
+            TextBlock(block_id="a", tag="p", text="abcde"),
+            TextBlock(block_id="b", tag="p", text="fghij"),
+            TextBlock(block_id="c", tag="p", text="klmno"),
+        ]
+        selected = select_blocks_by_char_range(blocks, start_char=4, char_count=4)
+        self.assertEqual([block.block_id for block in selected], ["a", "b"])
 
     def test_parse_and_validate_repairs_code_fence_and_reorders_by_id(self) -> None:
         raw = """```json
@@ -211,6 +229,7 @@ def _test_config(data_dir: Path) -> Config:
         llm_base_url="http://example.invalid/v1",
         llm_api_key="test",
         llm_model="test-model",
+        llm_context_window=8192,
         llm_timeout_seconds=1,
         llm_temperature=0.1,
         llm_top_p=0.8,
