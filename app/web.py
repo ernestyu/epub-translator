@@ -437,7 +437,6 @@ def save_settings(
     failure_policy_setting: str,
     translate_titles_setting: bool,
     translate_footnotes_setting: bool,
-    ui_language_setting: str,
 ):
     update_runtime_config(
         CONFIG,
@@ -449,7 +448,7 @@ def save_settings(
         failure_policy_label_value=failure_policy_setting,
         translate_titles=translate_titles_setting,
         translate_footnotes=translate_footnotes_setting,
-        ui_language=ui_language_setting,
+        ui_language=CONFIG.ui_language,
     )
     env_path = save_env_settings(CONFIG)
     return t(
@@ -460,12 +459,95 @@ def save_settings(
     )
 
 
+def switch_ui_language(ui_language: str):
+    CONFIG.ui_language = ui_language
+    env_path = save_env_settings(CONFIG)
+    scope_choices = [t("scope_all"), t("scope_preview")]
+    job_headers = [
+        t("job_id"),
+        t("source_file"),
+        t("target_language"),
+        t("status"),
+        t("chapter_progress"),
+        t("text_progress"),
+        t("created_at"),
+        t("updated_at"),
+        t("action"),
+    ]
+    chapter_headers = [
+        "index",
+        "href",
+        t("title"),
+        t("status"),
+        t("text_blocks"),
+        "batch",
+        t("failed_batches"),
+        t("attempts"),
+        t("last_error"),
+    ]
+    preview_headers = [t("chapter_index"), t("title"), t("chapter_href"), t("text_blocks"), t("translatable_chars")]
+    return (
+        gr.update(value=f"# {t('app_title')}"),
+        gr.update(label=t("ui_language")),
+        gr.update(label=t("upload_epub")),
+        gr.update(label=t("source_language")),
+        gr.update(label=t("target_language")),
+        gr.update(label=t("custom_prompt")),
+        gr.update(value=t("load_preview")),
+        gr.update(label=t("preview_summary")),
+        gr.update(label=t("rendered_preview")),
+        gr.update(headers=preview_headers),
+        gr.update(label=t("preview_chapter")),
+        gr.update(label=t("chapter_start_char")),
+        gr.update(label=t("preview_char_count")),
+        gr.update(value=t("translate_preview")),
+        gr.update(label=t("preview_result")),
+        gr.update(label=t("translation_scope"), choices=scope_choices, value=scope_choices[0]),
+        gr.update(value=t("start_translation")),
+        gr.update(label=t("create_result")),
+        gr.update(label=t("new_job_id")),
+        gr.update(value=t("refresh_jobs")),
+        gr.update(headers=job_headers, value=jobs_table()),
+        gr.update(label=t("selected_job")),
+        gr.update(value=t("refresh_selected")),
+        gr.update(value=t("resume_job")),
+        gr.update(value=t("rerun_failed")),
+        gr.update(value=t("cancel_job")),
+        gr.update(value=t("delete_job")),
+        gr.update(label=t("action_result")),
+        gr.update(label=t("job_detail")),
+        gr.update(headers=chapter_headers),
+        gr.update(label=t("download_result")),
+        gr.update(label=t("output_mode")),
+        gr.update(label=t("failure_policy")),
+        gr.update(label=t("translate_titles")),
+        gr.update(label=t("translate_footnotes")),
+        gr.update(label=t("provider")),
+        gr.update(label=t("base_url")),
+        gr.update(label=t("api_key")),
+        gr.update(label=t("model")),
+        gr.update(value=t("refresh_models")),
+        gr.update(value=t("test_model")),
+        gr.update(label=t("context_window")),
+        gr.update(label=t("llm_result")),
+        gr.update(value=t("save_settings")),
+        gr.update(label=t("save_result")),
+        gr.update(label=t("action_result"), value=t("language_switched", path=env_path.resolve())),
+    )
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title=t("app_title")) as demo:
-        gr.Markdown(f"# {t('app_title')}")
+        page_title = gr.Markdown(f"# {t('app_title')}")
 
         with gr.Tabs():
             with gr.Tab(t("tab_new")):
+                ui_language_selector = gr.Dropdown(
+                    choices=list(SUPPORTED_UI_LANGUAGES.keys()),
+                    value=CONFIG.ui_language,
+                    label=t("ui_language"),
+                )
+                language_message = gr.Textbox(label=t("action_result"), lines=2)
                 epub_file = gr.File(label=t("upload_epub"), file_types=[".epub"])
                 with gr.Row():
                     source_language = gr.Dropdown(LANGUAGES, label=t("source_language"), value=CONFIG.default_source_language)
@@ -568,11 +650,6 @@ def build_ui() -> gr.Blocks:
                     llm_context_window = gr.Number(label=t("context_window"), value=CONFIG.llm_context_window, precision=0)
                     llm_message = gr.Textbox(label=t("llm_result"), lines=3)
 
-                ui_language_setting = gr.Dropdown(
-                    choices=list(SUPPORTED_UI_LANGUAGES.keys()),
-                    value=CONFIG.ui_language,
-                    label=t("ui_language"),
-                )
                 save_settings_button = gr.Button(t("save_settings"), variant="primary")
                 settings_message = gr.Textbox(label=t("save_result"), lines=3)
 
@@ -642,9 +719,60 @@ def build_ui() -> gr.Blocks:
                 failure_policy_setting,
                 translate_titles_setting,
                 translate_footnotes_setting,
-                ui_language_setting,
             ],
             outputs=settings_message,
+        )
+        ui_language_selector.change(
+            switch_ui_language,
+            inputs=ui_language_selector,
+            outputs=[
+                page_title,
+                ui_language_selector,
+                epub_file,
+                source_language,
+                target_language,
+                user_prompt,
+                preview_button,
+                epub_preview_summary,
+                epub_reader,
+                chapter_table_preview,
+                preview_chapter,
+                preview_start_char,
+                preview_char_count,
+                preview_translate_button,
+                translation_preview_message,
+                translation_scope,
+                start_button,
+                create_message,
+                created_job_id,
+                refresh_jobs,
+                jobs,
+                selected_job_id,
+                refresh_selected_button,
+                resume_button,
+                rerun_button,
+                cancel_button,
+                delete_button,
+                action_message,
+                detail_summary,
+                chapter_table,
+                detail_download,
+                output_mode_setting,
+                failure_policy_setting,
+                translate_titles_setting,
+                translate_footnotes_setting,
+                provider,
+                llm_base_url,
+                llm_api_key,
+                llm_model,
+                refresh_models_button,
+                test_model_button,
+                llm_context_window,
+                llm_message,
+                save_settings_button,
+                settings_message,
+                language_message,
+            ],
         )
 
     return demo

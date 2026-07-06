@@ -74,10 +74,10 @@ The app has three tabs:
    - Configure translation defaults.
    - Configure LLM provider, base URL, API key, model, and context window.
    - Refresh models from the provider and test the selected model.
-   - Choose UI language (`zh` or `en`).
+   - Choose UI language (`zh` or `en`). A language selector is also available at the top of the New Translation tab for first-time users.
    - Save settings to `.env`.
 
-The UI language setting is persisted to `.env`. Refresh or restart the app for the whole interface to be rebuilt in the selected language.
+The UI language setting is persisted to `.env`. Most visible controls switch immediately. Refresh the page if your browser keeps old tab titles.
 
 ## Environment Variables
 
@@ -158,7 +158,7 @@ python -m unittest discover -s tests
 
 ## Version
 
-Current version: `0.1.0`
+Current version: `0.1.1`
 
 ## License
 
