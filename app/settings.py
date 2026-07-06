@@ -4,18 +4,19 @@ import os
 from pathlib import Path
 
 from app.config import CONFIG, Config
+from app.i18n import normalize_language
 from app.utils import atomic_write_text
 
 
 OUTPUT_MODE_LABELS = {
-    "append_block": "append_block：原文段落后追加译文",
-    "replace": "replace：只保留译文",
+    "append_block": "append_block: original + translated paragraph / 原文段落后追加译文",
+    "replace": "replace: translation only / 只保留译文",
 }
 OUTPUT_MODE_VALUES = {value: key for key, value in OUTPUT_MODE_LABELS.items()}
 
 FAILURE_POLICY_LABELS = {
-    "stop_on_failed_chapter": "stop_on_failed_chapter：失败则停止任务",
-    "keep_original_on_failed_chapter": "keep_original_on_failed_chapter：失败章节保留原文并继续",
+    "stop_on_failed_chapter": "stop_on_failed_chapter: stop on failure / 失败则停止任务",
+    "keep_original_on_failed_chapter": "keep_original_on_failed_chapter: keep original and continue / 失败章节保留原文并继续",
 }
 FAILURE_POLICY_VALUES = {value: key for key, value in FAILURE_POLICY_LABELS.items()}
 
@@ -57,6 +58,7 @@ def update_runtime_config(
     failure_policy_label_value: str,
     translate_titles: bool,
     translate_footnotes: bool,
+    ui_language: str,
 ) -> None:
     config.llm_base_url = base_url.strip()
     config.llm_api_key = api_key.strip()
@@ -66,6 +68,7 @@ def update_runtime_config(
     config.default_chapter_failure_policy = failure_policy_value(failure_policy_label_value)
     config.default_translate_titles = bool(translate_titles)
     config.default_translate_footnotes = bool(translate_footnotes)
+    config.ui_language = normalize_language(ui_language)
 
 
 def save_env_settings(config: Config) -> Path:
@@ -82,6 +85,7 @@ def save_env_settings(config: Config) -> Path:
         "DEFAULT_CHAPTER_FAILURE_POLICY": config.default_chapter_failure_policy,
         "DEFAULT_TRANSLATE_TITLES": _bool_text(config.default_translate_titles),
         "DEFAULT_TRANSLATE_FOOTNOTES": _bool_text(config.default_translate_footnotes),
+        "UI_LANGUAGE": config.ui_language,
         "LLM_TIMEOUT_SECONDS": str(config.llm_timeout_seconds),
         "LLM_TEMPERATURE": str(config.llm_temperature),
         "LLM_TOP_P": str(config.llm_top_p),

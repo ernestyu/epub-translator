@@ -33,6 +33,7 @@ class Config:
     default_chapter_failure_policy: str
     default_translate_titles: bool
     default_translate_footnotes: bool
+    ui_language: str
     log_level: str
 
     @classmethod
@@ -64,6 +65,7 @@ class Config:
             ),
             default_translate_titles=_env_bool("DEFAULT_TRANSLATE_TITLES", True),
             default_translate_footnotes=_env_bool("DEFAULT_TRANSLATE_FOOTNOTES", True),
+            ui_language=os.getenv("UI_LANGUAGE", "zh"),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 

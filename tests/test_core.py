@@ -242,6 +242,7 @@ def _test_config(data_dir: Path) -> Config:
         default_chapter_failure_policy="stop_on_failed_chapter",
         default_translate_titles=True,
         default_translate_footnotes=True,
+        ui_language="zh",
         log_level="INFO",
     )
 
