@@ -99,13 +99,13 @@ volumes:
 构建镜像：
 
 ```bash
-docker build -t epub-translator-web:0.1.2 .
+docker build -t epub-translator-web:0.1.3 .
 ```
 
 运行容器：
 
 ```bash
-docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.2
+docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.3
 ```
 
 如果你在 Linux 主机上使用宿主机本地 LLM 服务，需要确保容器能访问 `host.docker.internal`。本项目的 Compose 文件已经包含：
@@ -226,7 +226,7 @@ python -m unittest discover -s tests
 
 ## 版本
 
-当前版本：`0.1.2`
+当前版本：`0.1.3`
 
 ## 许可证
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 - 2026-07-06
+
+### Changed
+
+- Replaced Gradio tab labels with an updateable page selector so **New Translation**, **Jobs**, and **Settings** switch language immediately.
+- Replaced Gradio accordion titles with updateable section headings for preview, translation defaults, and LLM settings.
+- Replaced Gradio browser-locale-driven upload prompt text and disabled the default footer so framework chrome does not leak Chinese into the English UI.
+
+### Fixed
+
+- Fixed remaining Chinese labels in the English UI after live language switching, including page navigation, preview table headers, job detail table headers, and settings section headings.
+
 ## 0.1.2 - 2026-07-06
 
 ### Changed

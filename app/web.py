@@ -39,6 +39,64 @@ LANGUAGES = [
     "Portuguese",
 ]
 PREVIEW_MAX_CHARS = 5000
+APP_CSS = """
+#epub-upload button .wrap {
+    font-size: 0 !important;
+}
+
+#epub-upload button .wrap::after {
+    color: var(--body-text-color);
+    content: "EPUB";
+    font-size: var(--text-md);
+}
+
+#jobs-page,
+#settings-page {
+    display: none;
+}
+"""
+APP_HEAD = """
+<script>
+(() => {
+    const pageMap = {
+        "New Translation": "new-page",
+        "Jobs": "jobs-page",
+        "Settings": "settings-page",
+        "\\u65b0\\u5efa\\u7ffb\\u8bd1\\u4efb\\u52a1": "new-page",
+        "\\u4efb\\u52a1\\u5217\\u8868": "jobs-page",
+        "\\u8bbe\\u7f6e": "settings-page",
+    };
+    const panelIds = ["new-page", "jobs-page", "settings-page"];
+    const applyPageVisibility = () => {
+        const checked = document.querySelector("#page-selector input[type='radio']:checked");
+        const activeId = pageMap[checked?.value] || "new-page";
+        for (const id of panelIds) {
+            const panel = document.getElementById(id);
+            if (panel) {
+                panel.style.display = id === activeId ? "block" : "none";
+            }
+        }
+    };
+    const patchUploadPrompt = () => {
+        const prompt = document.querySelector("#epub-upload button .wrap");
+        if (prompt && prompt.textContent.trim() !== "EPUB") {
+            prompt.textContent = "EPUB";
+        }
+    };
+    const patchUi = () => {
+        applyPageVisibility();
+        patchUploadPrompt();
+    };
+    document.addEventListener("DOMContentLoaded", patchUi);
+    document.addEventListener("change", patchUi, true);
+    document.addEventListener("click", () => setTimeout(patchUi, 0), true);
+    new MutationObserver(patchUi).observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+    });
+})();
+</script>
+"""
 
 
 def t(key: str, **kwargs) -> str:
@@ -464,9 +522,14 @@ def save_settings(
     )
 
 
+def page_choices() -> list[str]:
+    return [t("tab_new"), t("tab_jobs"), t("tab_settings")]
+
+
 def switch_ui_language(ui_language: str):
     CONFIG.ui_language = ui_language
     env_path = save_env_settings(CONFIG)
+    navigation_choices = page_choices()
     scope_choices = [t("scope_all"), t("scope_preview")]
     job_headers = [
         t("job_id"),
@@ -495,11 +558,14 @@ def switch_ui_language(ui_language: str):
     failure_choices = failure_policy_labels(CONFIG.ui_language)
     return (
         gr.update(value=f"# {t('app_title')}"),
+        gr.update(label=t("navigation"), choices=navigation_choices, value=navigation_choices[0]),
         gr.update(label=t("ui_language")),
+        gr.update(label=t("action_result"), value=t("language_switched", path=env_path.resolve())),
         gr.update(label=t("upload_epub")),
         gr.update(label=t("source_language")),
         gr.update(label=t("target_language")),
         gr.update(label=t("custom_prompt")),
+        gr.update(value=f"### {t('preview_group')}"),
         gr.update(value=t("load_preview")),
         gr.update(label=t("preview_summary")),
         gr.update(label=t("rendered_preview")),
@@ -525,10 +591,12 @@ def switch_ui_language(ui_language: str):
         gr.update(label=t("job_detail")),
         gr.update(headers=chapter_headers),
         gr.update(label=t("download_result")),
+        gr.update(value=f"### {t('translation_defaults')}"),
         gr.update(label=t("output_mode"), choices=output_choices, value=output_mode_label(CONFIG.default_output_mode, CONFIG.ui_language)),
         gr.update(label=t("failure_policy"), choices=failure_choices, value=failure_policy_label(CONFIG.default_chapter_failure_policy, CONFIG.ui_language)),
         gr.update(label=t("translate_titles")),
         gr.update(label=t("translate_footnotes")),
+        gr.update(value=f"### {t('llm_settings')}"),
         gr.update(label=t("provider")),
         gr.update(label=t("base_url")),
         gr.update(label=t("api_key")),
@@ -539,7 +607,6 @@ def switch_ui_language(ui_language: str):
         gr.update(label=t("llm_result")),
         gr.update(value=t("save_settings")),
         gr.update(label=t("save_result")),
-        gr.update(label=t("action_result"), value=t("language_switched", path=env_path.resolve())),
     )
 
 
@@ -547,118 +614,122 @@ def build_ui() -> gr.Blocks:
     with gr.Blocks(title=t("app_title")) as demo:
         page_title = gr.Markdown(f"# {t('app_title')}")
 
-        with gr.Tabs():
-            with gr.Tab(t("tab_new")):
-                ui_language_selector = gr.Dropdown(
-                    choices=list(SUPPORTED_UI_LANGUAGES.keys()),
-                    value=CONFIG.ui_language,
-                    label=t("ui_language"),
-                )
-                language_message = gr.Textbox(label=t("action_result"), lines=2)
-                epub_file = gr.File(label=t("upload_epub"), file_types=[".epub"])
-                with gr.Row():
-                    source_language = gr.Dropdown(LANGUAGES, label=t("source_language"), value=CONFIG.default_source_language)
-                    target_language = gr.Dropdown(LANGUAGES, label=t("target_language"), value=CONFIG.default_target_language)
-                user_prompt = gr.Textbox(label=t("custom_prompt"), lines=4)
-                with gr.Accordion(t("preview_group"), open=True):
-                    preview_button = gr.Button(t("load_preview"))
-                    epub_preview_summary = gr.Textbox(label=t("preview_summary"), lines=3)
-                    epub_reader = gr.HTML(label=t("rendered_preview"))
-                    chapter_table_preview = gr.Dataframe(
-                        headers=[t("chapter_index"), t("title"), t("chapter_href"), t("text_blocks"), t("translatable_chars")],
-                        interactive=False,
-                    )
-                    preview_chapter = gr.Dropdown(label=t("preview_chapter"))
-                    with gr.Row():
-                        preview_start_char = gr.Number(label=t("chapter_start_char"), value=0, precision=0)
-                        preview_char_count = gr.Number(label=t("preview_char_count"), value=1000, precision=0)
-                    preview_translate_button = gr.Button(t("translate_preview"))
-                    translation_preview_message = gr.Textbox(label=t("preview_result"), lines=3)
-                translation_scope = gr.Radio(
-                    [t("scope_all"), t("scope_preview")],
-                    label=t("translation_scope"),
-                    value=t("scope_all"),
-                )
-                start_button = gr.Button(t("start_translation"), variant="primary")
-                create_message = gr.Textbox(label=t("create_result"), lines=3)
-                created_job_id = gr.Textbox(label=t("new_job_id"))
+        page_selector = gr.Radio(page_choices(), value=t("tab_new"), label=t("navigation"), elem_id="page-selector")
 
-            with gr.Tab(t("tab_jobs")):
-                refresh_jobs = gr.Button(t("refresh_jobs"))
-                jobs = gr.Dataframe(
-                    headers=[
-                        t("job_id"),
-                        t("source_file"),
-                        t("target_language"),
-                        t("status"),
-                        t("chapter_progress"),
-                        t("text_progress"),
-                        t("created_at"),
-                        t("updated_at"),
-                        t("action"),
-                    ],
-                    value=jobs_table,
+        with gr.Column(elem_id="new-page") as new_page:
+            ui_language_selector = gr.Dropdown(
+                choices=list(SUPPORTED_UI_LANGUAGES.keys()),
+                value=CONFIG.ui_language,
+                label=t("ui_language"),
+            )
+            language_message = gr.Textbox(label=t("action_result"), lines=2)
+            epub_file = gr.File(label=t("upload_epub"), file_types=[".epub"], elem_id="epub-upload")
+            with gr.Row():
+                source_language = gr.Dropdown(LANGUAGES, label=t("source_language"), value=CONFIG.default_source_language)
+                target_language = gr.Dropdown(LANGUAGES, label=t("target_language"), value=CONFIG.default_target_language)
+            user_prompt = gr.Textbox(label=t("custom_prompt"), lines=4)
+            preview_heading = gr.Markdown(f"### {t('preview_group')}")
+            with gr.Group():
+                preview_button = gr.Button(t("load_preview"))
+                epub_preview_summary = gr.Textbox(label=t("preview_summary"), lines=3)
+                epub_reader = gr.HTML(label=t("rendered_preview"))
+                chapter_table_preview = gr.Dataframe(
+                    headers=[t("chapter_index"), t("title"), t("chapter_href"), t("text_blocks"), t("translatable_chars")],
                     interactive=False,
                 )
-                selected_job_id = gr.Textbox(label=t("selected_job"))
+                preview_chapter = gr.Dropdown(label=t("preview_chapter"))
                 with gr.Row():
-                    refresh_selected_button = gr.Button(t("refresh_selected"))
-                    resume_button = gr.Button(t("resume_job"))
-                    rerun_button = gr.Button(t("rerun_failed"))
-                    cancel_button = gr.Button(t("cancel_job"))
-                    delete_button = gr.Button(t("delete_job"), variant="stop")
-                action_message = gr.Textbox(label=t("action_result"))
-                detail_summary = gr.Textbox(label=t("job_detail"), lines=12)
-                chapter_table = gr.Dataframe(
-                    headers=[
-                        "index",
-                        "href",
-                        t("title"),
-                        t("status"),
-                        t("text_blocks"),
-                        "batch",
-                        t("failed_batches"),
-                        t("attempts"),
-                        t("last_error"),
-                    ],
-                    interactive=False,
+                    preview_start_char = gr.Number(label=t("chapter_start_char"), value=0, precision=0)
+                    preview_char_count = gr.Number(label=t("preview_char_count"), value=1000, precision=0)
+                preview_translate_button = gr.Button(t("translate_preview"))
+                translation_preview_message = gr.Textbox(label=t("preview_result"), lines=3)
+            translation_scope = gr.Radio(
+                [t("scope_all"), t("scope_preview")],
+                label=t("translation_scope"),
+                value=t("scope_all"),
+            )
+            start_button = gr.Button(t("start_translation"), variant="primary")
+            create_message = gr.Textbox(label=t("create_result"), lines=3)
+            created_job_id = gr.Textbox(label=t("new_job_id"))
+
+        with gr.Column(elem_id="jobs-page") as jobs_page:
+            refresh_jobs = gr.Button(t("refresh_jobs"))
+            jobs = gr.Dataframe(
+                headers=[
+                    t("job_id"),
+                    t("source_file"),
+                    t("target_language"),
+                    t("status"),
+                    t("chapter_progress"),
+                    t("text_progress"),
+                    t("created_at"),
+                    t("updated_at"),
+                    t("action"),
+                ],
+                value=jobs_table,
+                interactive=False,
+            )
+            selected_job_id = gr.Textbox(label=t("selected_job"))
+            with gr.Row():
+                refresh_selected_button = gr.Button(t("refresh_selected"))
+                resume_button = gr.Button(t("resume_job"))
+                rerun_button = gr.Button(t("rerun_failed"))
+                cancel_button = gr.Button(t("cancel_job"))
+                delete_button = gr.Button(t("delete_job"), variant="stop")
+            action_message = gr.Textbox(label=t("action_result"))
+            detail_summary = gr.Textbox(label=t("job_detail"), lines=12)
+            chapter_table = gr.Dataframe(
+                headers=[
+                    "index",
+                    "href",
+                    t("title"),
+                    t("status"),
+                    t("text_blocks"),
+                    "batch",
+                    t("failed_batches"),
+                    t("attempts"),
+                    t("last_error"),
+                ],
+                interactive=False,
+            )
+            detail_download = gr.File(label=t("download_result"))
+
+        with gr.Column(elem_id="settings-page") as settings_page:
+            translation_defaults_heading = gr.Markdown(f"### {t('translation_defaults')}")
+            with gr.Group():
+                output_mode_setting = gr.Radio(
+                    output_mode_labels(CONFIG.ui_language),
+                    label=t("output_mode"),
+                    value=output_mode_label(CONFIG.default_output_mode, CONFIG.ui_language),
                 )
-                detail_download = gr.File(label=t("download_result"))
+                failure_policy_setting = gr.Radio(
+                    failure_policy_labels(CONFIG.ui_language),
+                    label=t("failure_policy"),
+                    value=failure_policy_label(CONFIG.default_chapter_failure_policy, CONFIG.ui_language),
+                )
+                with gr.Row():
+                    translate_titles_setting = gr.Checkbox(label=t("translate_titles"), value=CONFIG.default_translate_titles)
+                    translate_footnotes_setting = gr.Checkbox(label=t("translate_footnotes"), value=CONFIG.default_translate_footnotes)
 
-            with gr.Tab(t("tab_settings")):
-                with gr.Accordion(t("translation_defaults"), open=True):
-                    output_mode_setting = gr.Radio(
-                        output_mode_labels(CONFIG.ui_language),
-                        label=t("output_mode"),
-                        value=output_mode_label(CONFIG.default_output_mode, CONFIG.ui_language),
+            llm_settings_heading = gr.Markdown(f"### {t('llm_settings')}")
+            with gr.Group():
+                provider = gr.Dropdown(list(PROVIDER_BASE_URLS.keys()), label=t("provider"), value="Custom")
+                llm_base_url = gr.Textbox(label=t("base_url"), value=CONFIG.llm_base_url)
+                llm_api_key = gr.Textbox(label=t("api_key"), value=CONFIG.llm_api_key, type="password")
+                with gr.Row():
+                    llm_model = gr.Dropdown(
+                        choices=[CONFIG.llm_model],
+                        value=CONFIG.llm_model,
+                        label=t("model"),
+                        allow_custom_value=True,
                     )
-                    failure_policy_setting = gr.Radio(
-                        failure_policy_labels(CONFIG.ui_language),
-                        label=t("failure_policy"),
-                        value=failure_policy_label(CONFIG.default_chapter_failure_policy, CONFIG.ui_language),
-                    )
-                    with gr.Row():
-                        translate_titles_setting = gr.Checkbox(label=t("translate_titles"), value=CONFIG.default_translate_titles)
-                        translate_footnotes_setting = gr.Checkbox(label=t("translate_footnotes"), value=CONFIG.default_translate_footnotes)
+                    refresh_models_button = gr.Button(t("refresh_models"))
+                    test_model_button = gr.Button(t("test_model"))
+                llm_context_window = gr.Number(label=t("context_window"), value=CONFIG.llm_context_window, precision=0)
+                llm_message = gr.Textbox(label=t("llm_result"), lines=3)
 
-                with gr.Accordion(t("llm_settings"), open=True):
-                    provider = gr.Dropdown(list(PROVIDER_BASE_URLS.keys()), label=t("provider"), value="Custom")
-                    llm_base_url = gr.Textbox(label=t("base_url"), value=CONFIG.llm_base_url)
-                    llm_api_key = gr.Textbox(label=t("api_key"), value=CONFIG.llm_api_key, type="password")
-                    with gr.Row():
-                        llm_model = gr.Dropdown(
-                            choices=[CONFIG.llm_model],
-                            value=CONFIG.llm_model,
-                            label=t("model"),
-                            allow_custom_value=True,
-                        )
-                        refresh_models_button = gr.Button(t("refresh_models"))
-                        test_model_button = gr.Button(t("test_model"))
-                    llm_context_window = gr.Number(label=t("context_window"), value=CONFIG.llm_context_window, precision=0)
-                    llm_message = gr.Textbox(label=t("llm_result"), lines=3)
-
-                save_settings_button = gr.Button(t("save_settings"), variant="primary")
-                settings_message = gr.Textbox(label=t("save_result"), lines=3)
+            save_settings_button = gr.Button(t("save_settings"), variant="primary")
+            settings_message = gr.Textbox(label=t("save_result"), lines=3)
 
         start_button.click(
             create_and_start_job,
@@ -734,11 +805,14 @@ def build_ui() -> gr.Blocks:
             inputs=ui_language_selector,
             outputs=[
                 page_title,
+                page_selector,
                 ui_language_selector,
+                language_message,
                 epub_file,
                 source_language,
                 target_language,
                 user_prompt,
+                preview_heading,
                 preview_button,
                 epub_preview_summary,
                 epub_reader,
@@ -764,10 +838,12 @@ def build_ui() -> gr.Blocks:
                 detail_summary,
                 chapter_table,
                 detail_download,
+                translation_defaults_heading,
                 output_mode_setting,
                 failure_policy_setting,
                 translate_titles_setting,
                 translate_footnotes_setting,
+                llm_settings_heading,
                 provider,
                 llm_base_url,
                 llm_api_key,
@@ -778,7 +854,6 @@ def build_ui() -> gr.Blocks:
                 llm_message,
                 save_settings_button,
                 settings_message,
-                language_message,
             ],
         )
 
@@ -792,5 +867,8 @@ def main() -> None:
     demo.queue().launch(
         server_name=CONFIG.app_host,
         server_port=CONFIG.app_port,
+        footer_links=[],
+        css=APP_CSS,
+        head=APP_HEAD,
         allowed_paths=[str(CONFIG.output_dir.resolve())],
     )
