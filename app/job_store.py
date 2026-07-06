@@ -133,6 +133,30 @@ class JobStore:
         jobs.sort(key=lambda job: job.updated_at, reverse=True)
         return jobs
 
+    def list_job_summaries(self) -> list[dict]:
+        summaries: list[dict] = []
+        for state_path in self.config.jobs_dir.glob("*/state.json"):
+            try:
+                data = read_json(state_path)
+            except Exception:
+                continue
+            summaries.append(
+                {
+                    "job_id": data.get("job_id", state_path.parent.name),
+                    "source_filename": data.get("source_filename", ""),
+                    "target_language": data.get("target_language", ""),
+                    "status": data.get("status", ""),
+                    "done_chapters": data.get("done_chapters", 0),
+                    "total_chapters": data.get("total_chapters", len(data.get("chapters", []))),
+                    "done_text_blocks": data.get("done_text_blocks", 0),
+                    "total_text_blocks": data.get("total_text_blocks", 0),
+                    "created_at": data.get("created_at", ""),
+                    "updated_at": data.get("updated_at", ""),
+                }
+            )
+        summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+        return summaries
+
     def request_cancel(self, job_id: str) -> JobState:
         job = self.load(job_id)
         job.cancel_requested = True
@@ -144,6 +168,17 @@ class JobStore:
 
     def delete_job(self, job_id: str) -> None:
         job_dir = self._job_dir(job_id)
+        output_path: Path | None = None
+        try:
+            raw_output_path = self.load(job_id).output_path
+            output_path = Path(raw_output_path) if raw_output_path else None
+        except Exception:
+            output_path = None
+        if output_path and output_path.exists():
+            try:
+                ensure_within(output_path, self.config.output_dir).unlink()
+            except Exception:
+                pass
         if job_dir.exists():
             shutil.rmtree(job_dir)
 

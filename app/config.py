@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     data_dir: Path
     jobs_dir: Path
@@ -26,10 +26,13 @@ class Config:
     llm_top_p: float
     default_source_language: str
     default_target_language: str
+    default_output_mode: str
     default_batch_size: int
     default_max_batch_chars: int
     default_batch_retries: int
     default_chapter_failure_policy: str
+    default_translate_titles: bool
+    default_translate_footnotes: bool
     log_level: str
 
     @classmethod
@@ -52,12 +55,15 @@ class Config:
             llm_top_p=float(os.getenv("LLM_TOP_P", "0.8")),
             default_source_language=os.getenv("SOURCE_LANGUAGE", "English"),
             default_target_language=os.getenv("TARGET_LANGUAGE", "Simplified Chinese"),
+            default_output_mode=os.getenv("DEFAULT_OUTPUT_MODE", "append_block"),
             default_batch_size=int(os.getenv("DEFAULT_BATCH_SIZE", "8")),
             default_max_batch_chars=int(os.getenv("DEFAULT_MAX_BATCH_CHARS", "6000")),
             default_batch_retries=int(os.getenv("DEFAULT_BATCH_RETRIES", "3")),
             default_chapter_failure_policy=os.getenv(
-                "DEFAULT_CHAPTER_FAILURE_POLICY", "stop_on_failed_chapter"
+                "DEFAULT_CHAPTER_FAILURE_POLICY", "keep_original_on_failed_chapter"
             ),
+            default_translate_titles=_env_bool("DEFAULT_TRANSLATE_TITLES", True),
+            default_translate_footnotes=_env_bool("DEFAULT_TRANSLATE_FOOTNOTES", True),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 
@@ -75,6 +81,21 @@ class Config:
         safety_margin = max(500, int(self.llm_context_window * 0.1))
         budget = self.llm_context_window - self.llm_reserved_output_tokens - prompt_overhead - safety_margin
         return max(512, budget)
+
+    @property
+    def derived_batch_size(self) -> int:
+        return max(4, min(24, self.llm_max_input_tokens // 220))
+
+    @property
+    def derived_max_batch_chars(self) -> int:
+        return max(1500, min(12000, self.llm_max_input_tokens * 3))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 CONFIG = Config.from_env()

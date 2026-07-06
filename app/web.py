@@ -5,12 +5,22 @@ import sys
 from pathlib import Path
 
 import gradio as gr
+from openai import OpenAI
 
 from app.config import CONFIG
 from app.epub_io import read_epub_info, unpack_epub
 from app.extractor import extract_text_blocks, parse_xhtml
 from app.job_store import JobStore
 from app.preview import build_translated_preview_epub, chapter_summaries, epub_reader_html
+from app.settings import (
+    FAILURE_POLICY_LABELS,
+    OUTPUT_MODE_LABELS,
+    PROVIDER_BASE_URLS,
+    output_mode_label,
+    failure_policy_label,
+    save_env_settings,
+    update_runtime_config,
+)
 from app.utils import mask_secret, sanitize_filename
 from app.worker import WorkerManager
 
@@ -55,14 +65,7 @@ def create_and_start_job(
     epub_file,
     source_language: str,
     target_language: str,
-    mode_label: str,
-    batch_size: int,
-    max_batch_chars: int,
-    max_batch_retries: int,
-    failure_policy_label: str,
     user_prompt: str,
-    translate_titles: bool,
-    translate_footnotes: bool,
     translation_scope_label: str,
     preview_chapter_label,
     preview_start_char,
@@ -74,34 +77,28 @@ def create_and_start_job(
     if source_path.suffix.lower() != ".epub":
         raise gr.Error("只支持 .epub 文件。")
 
-    mode = "append_block" if mode_label.startswith("append_block") else "replace"
-    failure_policy = (
-        "keep_original_on_failed_chapter"
-        if failure_policy_label.startswith("keep_original")
-        else "stop_on_failed_chapter"
-    )
     translate_start_block, translate_end_block = _scope_bounds(
         translation_scope_label,
         source_path,
         preview_chapter_label,
         preview_start_char,
         preview_char_count,
-        translate_titles,
-        translate_footnotes,
+        CONFIG.default_translate_titles,
+        CONFIG.default_translate_footnotes,
     )
     job = store.create_job(
         uploaded_path=source_path,
         original_filename=sanitize_filename(original_filename),
         source_language=source_language,
         target_language=target_language,
-        mode=mode,
-        batch_size=int(batch_size),
-        max_batch_chars=int(max_batch_chars),
-        max_batch_retries=int(max_batch_retries),
-        chapter_failure_policy=failure_policy,
+        mode=CONFIG.default_output_mode,
+        batch_size=CONFIG.derived_batch_size,
+        max_batch_chars=CONFIG.derived_max_batch_chars,
+        max_batch_retries=CONFIG.default_batch_retries,
+        chapter_failure_policy=CONFIG.default_chapter_failure_policy,
         user_prompt=user_prompt,
-        translate_titles=translate_titles,
-        translate_footnotes=translate_footnotes,
+        translate_titles=CONFIG.default_translate_titles,
+        translate_footnotes=CONFIG.default_translate_footnotes,
         translate_toc=False,
         translate_start_block=translate_start_block,
         translate_end_block=translate_end_block,
@@ -112,21 +109,42 @@ def create_and_start_job(
 
 def jobs_table():
     rows = []
-    for job in store.list_jobs():
+    for job in store.list_job_summaries():
         rows.append(
             [
-                job.job_id,
-                job.source_filename,
-                job.target_language,
-                job.status,
-                f"{job.done_chapters}/{job.total_chapters}",
-                f"{job.done_text_blocks}/{job.total_text_blocks}",
-                job.created_at,
-                job.updated_at,
-                job.output_path or "",
+                job["job_id"],
+                job["source_filename"],
+                job["target_language"],
+                job["status"],
+                f"{job['done_chapters']}/{job['total_chapters']}",
+                f"{job['done_text_blocks']}/{job['total_text_blocks']}",
+                job["created_at"],
+                job["updated_at"],
+                "删除：选中本行后点下方删除按钮",
             ]
         )
     return rows
+
+
+def select_job_from_table(table, evt: gr.SelectData):
+    row = _selected_row(table, evt)
+    if not row:
+        return "", "请选择一个任务。", [], None
+    job_id = str(row[0])
+    summary, chapters, download = job_detail(job_id)
+    return job_id, summary, chapters, download
+
+
+def _selected_row(table, evt: gr.SelectData):
+    try:
+        row_index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        if hasattr(table, "iloc"):
+            return table.iloc[row_index].tolist()
+        if isinstance(table, dict) and "data" in table:
+            return table["data"][row_index]
+        return table[row_index]
+    except Exception:
+        return None
 
 
 def _uploaded_file_info(file_value) -> tuple[Path, str]:
@@ -145,11 +163,16 @@ def _uploaded_file_info(file_value) -> tuple[Path, str]:
     raise gr.Error("无法识别上传文件。")
 
 
-def preview_epub(epub_file, translate_titles: bool, translate_footnotes: bool):
+def preview_epub(epub_file):
     if epub_file is None:
         raise gr.Error("请先上传 EPUB 文件。")
     source_path, original_filename = _uploaded_file_info(epub_file)
-    chapters = chapter_summaries(source_path, translate_titles, translate_footnotes, CONFIG)
+    chapters = chapter_summaries(
+        source_path,
+        CONFIG.default_translate_titles,
+        CONFIG.default_translate_footnotes,
+        CONFIG,
+    )
     chapter_rows = [[chapter.index, chapter.title, chapter.href, chapter.text_blocks, chapter.chars] for chapter in chapters]
     choices = [chapter.label for chapter in chapters]
     summary = "\n".join(
@@ -166,13 +189,7 @@ def preview_epub(epub_file, translate_titles: bool, translate_footnotes: bool):
 def preview_translation(
     epub_file,
     target_language: str,
-    mode_label: str,
-    batch_size,
-    max_batch_chars,
-    max_batch_retries,
     user_prompt: str,
-    translate_titles: bool,
-    translate_footnotes: bool,
     preview_chapter_label,
     preview_start_char,
     preview_char_count,
@@ -190,13 +207,13 @@ def preview_translation(
         start_char=start_char,
         char_count=char_count,
         target_language=target_language,
-        mode="append_block" if mode_label.startswith("append_block") else "replace",
-        batch_size=int(batch_size),
-        max_batch_chars=int(max_batch_chars),
-        max_retries=int(max_batch_retries),
+        mode=CONFIG.default_output_mode,
+        batch_size=CONFIG.derived_batch_size,
+        max_batch_chars=CONFIG.derived_max_batch_chars,
+        max_retries=CONFIG.default_batch_retries,
         user_prompt=user_prompt.strip() or None,
-        translate_titles=translate_titles,
-        translate_footnotes=translate_footnotes,
+        translate_titles=CONFIG.default_translate_titles,
+        translate_footnotes=CONFIG.default_translate_footnotes,
         config=CONFIG,
     )
     message = "\n".join(
@@ -224,7 +241,7 @@ def _scope_bounds(
     start_char, char_count = _clean_char_range(preview_start_char, preview_char_count)
     selected_indexes = [
         global_index
-        for global_index, row_chapter_index, _href, _tag, text, _block, chapter_char_start, chapter_char_end in _collect_preview_blocks(
+        for global_index, row_chapter_index, _href, _tag, _text, _block, chapter_char_start, chapter_char_end in _collect_preview_blocks(
             source_path, translate_titles, translate_footnotes
         )
         if row_chapter_index == chapter_index
@@ -296,11 +313,16 @@ def _clean_char_range(start_char, char_count) -> tuple[int, int]:
 
 def job_detail(job_id: str):
     if not job_id:
-        return "请输入或选择 job id。", [], None
+        return "请选择一个任务。", [], None
     try:
         job = store.load(job_id.strip())
     except Exception as exc:
         return f"无法读取任务：{exc}", [], None
+    scope = (
+        "全书"
+        if job.translate_start_block is None
+        else f"文本块 {job.translate_start_block} - {job.translate_end_block}"
+    )
     summary = "\n".join(
         [
             f"job_id: {job.job_id}",
@@ -310,6 +332,9 @@ def job_detail(job_id: str):
             f"模型: {job.model}",
             f"LLM API: {job.base_url} / key={mask_secret(CONFIG.llm_api_key)}",
             f"状态: {job.status}",
+            f"翻译范围: {scope}",
+            f"输出模式: {job.mode}",
+            f"章节失败策略: {job.chapter_failure_policy}",
             f"进度: 章节 {job.done_chapters}/{job.total_chapters}, 文本块 {job.done_text_blocks}/{job.total_text_blocks}",
             f"最近错误: {job.last_error or ''}",
         ]
@@ -332,58 +357,95 @@ def job_detail(job_id: str):
     return summary, chapters, download
 
 
+def refresh_selected_job(job_id: str):
+    summary, chapters, download = job_detail(job_id)
+    return jobs_table(), summary, chapters, download
+
+
 def resume_job(job_id: str):
     if not job_id:
-        raise gr.Error("请输入 job id。")
+        raise gr.Error("请先在任务表格里选择一个任务。")
     return worker.start(job_id.strip(), failed_only=False)
 
 
 def rerun_failed(job_id: str):
     if not job_id:
-        raise gr.Error("请输入 job id。")
+        raise gr.Error("请先在任务表格里选择一个任务。")
     return worker.start(job_id.strip(), failed_only=True)
 
 
 def cancel_job(job_id: str):
     if not job_id:
-        raise gr.Error("请输入 job id。")
+        raise gr.Error("请先在任务表格里选择一个任务。")
     job = store.request_cancel(job_id.strip())
     return f"已请求取消：{job.job_id}，当前状态 {job.status}"
 
 
-def delete_job(job_id: str):
+def delete_selected_job(job_id: str):
     if not job_id:
-        raise gr.Error("请输入 job id。")
+        raise gr.Error("请先在任务表格里选择一个任务。")
     store.delete_job(job_id.strip())
-    return f"已删除任务：{job_id.strip()}", jobs_table()
+    return f"已删除任务及输出文件：{job_id.strip()}", jobs_table(), "", "请选择一个任务。", [], None
 
 
-def output_files_table():
-    files = sorted(CONFIG.output_dir.glob("*.epub"), key=lambda path: path.stat().st_mtime, reverse=True)
-    return [[path.name, f"{path.stat().st_size / 1024 / 1024:.2f} MB", str(path)] for path in files]
+def provider_changed(provider: str):
+    base_url = PROVIDER_BASE_URLS.get(provider, "")
+    return gr.update(value=base_url) if base_url else gr.update()
 
 
-def choose_output(table, evt: gr.SelectData):
+def refresh_models(base_url: str, api_key: str, current_model: str):
     try:
-        row_index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-        if hasattr(table, "iloc"):
-            return table.iloc[row_index, 2]
-        if isinstance(table, dict) and "data" in table:
-            return table["data"][row_index][2]
-        return table[row_index][2]
-    except Exception:
-        return None
+        client = OpenAI(api_key=api_key or "ollama", base_url=base_url, timeout=20)
+        models = sorted(model.id for model in client.models.list().data)
+    except Exception as exc:
+        return gr.update(), f"刷新模型失败：{type(exc).__name__}: {exc}"
+    value = current_model if current_model in models else (models[0] if models else current_model)
+    return gr.update(choices=models, value=value), f"已刷新模型列表，共 {len(models)} 个。"
 
 
-def delete_output(path_value: str):
-    if not path_value:
-        raise gr.Error("请先选择文件。")
-    path = Path(path_value)
-    if path.parent.resolve() != CONFIG.output_dir.resolve():
-        raise gr.Error("非法输出路径。")
-    if path.exists():
-        path.unlink()
-    return output_files_table(), None
+def test_model(base_url: str, api_key: str, model: str, context_window):
+    if not model:
+        raise gr.Error("请先选择或填写模型名称。")
+    try:
+        client = OpenAI(api_key=api_key or "ollama", base_url=base_url, timeout=30)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with OK."}],
+            temperature=0,
+            max_tokens=8,
+        )
+        content = (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        return f"模型测试失败：{type(exc).__name__}: {exc}"
+    return f"模型测试成功。返回：{content or '(empty)'}；上下文大小设置为 {int(context_window or CONFIG.llm_context_window)}。"
+
+
+def save_settings(
+    base_url: str,
+    api_key: str,
+    model: str,
+    context_window,
+    output_mode_setting: str,
+    failure_policy_setting: str,
+    translate_titles_setting: bool,
+    translate_footnotes_setting: bool,
+):
+    update_runtime_config(
+        CONFIG,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        context_window=int(context_window or 8192),
+        output_mode_label_value=output_mode_setting,
+        failure_policy_label_value=failure_policy_setting,
+        translate_titles=translate_titles_setting,
+        translate_footnotes=translate_footnotes_setting,
+    )
+    env_path = save_env_settings(CONFIG)
+    return (
+        f"设置已保存到 {env_path.resolve()}，当前进程已立即应用。"
+        f"\n自动批次：最多 {CONFIG.derived_batch_size} 个文本块/批，约 {CONFIG.llm_max_input_tokens} input tokens。"
+    )
 
 
 def build_ui() -> gr.Blocks:
@@ -396,32 +458,8 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     source_language = gr.Dropdown(LANGUAGES, label="源语言", value=CONFIG.default_source_language)
                     target_language = gr.Dropdown(LANGUAGES, label="目标语言", value=CONFIG.default_target_language)
-                mode = gr.Radio(
-                    ["append_block：原文段落后追加译文", "replace：只保留译文"],
-                    label="输出模式",
-                    value="append_block：原文段落后追加译文",
-                )
-                with gr.Row():
-                    batch_size = gr.Number(label="批次大小", value=CONFIG.default_batch_size, precision=0)
-                    max_batch_chars = gr.Number(label="每批最大字符数", value=CONFIG.default_max_batch_chars, precision=0)
-                    max_batch_retries = gr.Number(label="每批最大重试次数", value=CONFIG.default_batch_retries, precision=0)
-                failure_policy = gr.Radio(
-                    [
-                        "stop_on_failed_chapter：失败则停止任务",
-                        "keep_original_on_failed_chapter：失败章节保留原文并继续",
-                    ],
-                    label="章节失败策略",
-                    value=(
-                        "keep_original_on_failed_chapter：失败章节保留原文并继续"
-                        if CONFIG.default_chapter_failure_policy == "keep_original_on_failed_chapter"
-                        else "stop_on_failed_chapter：失败则停止任务"
-                    ),
-                )
                 user_prompt = gr.Textbox(label="自定义翻译提示词，可选", lines=4)
-                with gr.Row():
-                    translate_titles = gr.Checkbox(label="翻译标题", value=True)
-                    translate_footnotes = gr.Checkbox(label="翻译脚注", value=True)
-                with gr.Accordion("上传预览和小范围翻译预览", open=True):
+                with gr.Accordion("EPUB 预览和小范围翻译预览", open=True):
                     preview_button = gr.Button("加载 / 刷新 EPUB 预览")
                     epub_preview_summary = gr.Textbox(label="EPUB 预览摘要", lines=3)
                     epub_reader = gr.HTML(label="EPUB 渲染预览")
@@ -431,16 +469,8 @@ def build_ui() -> gr.Blocks:
                     )
                     preview_chapter = gr.Dropdown(label="预览翻译章节")
                     with gr.Row():
-                        preview_start_char = gr.Number(
-                            label="章节内起始字符",
-                            value=0,
-                            precision=0,
-                        )
-                        preview_char_count = gr.Number(
-                            label="翻译字符数",
-                            value=1000,
-                            precision=0,
-                        )
+                        preview_start_char = gr.Number(label="章节内起始字符", value=0, precision=0)
+                        preview_char_count = gr.Number(label="翻译字符数", value=1000, precision=0)
                     preview_translate_button = gr.Button("翻译预览并刷新阅读器")
                     translation_preview_message = gr.Textbox(label="翻译预览结果", lines=3)
                 translation_scope = gr.Radio(
@@ -464,22 +494,20 @@ def build_ui() -> gr.Blocks:
                         "文本块进度",
                         "创建时间",
                         "更新时间",
-                        "输出路径",
+                        "操作",
                     ],
                     value=jobs_table,
                     interactive=False,
                 )
-
-            with gr.Tab("任务详情"):
-                detail_job_id = gr.Textbox(label="job id")
+                selected_job_id = gr.Textbox(label="选中的 job id")
                 with gr.Row():
-                    detail_button = gr.Button("查看详情")
+                    refresh_selected_button = gr.Button("刷新选中任务")
                     resume_button = gr.Button("继续任务")
                     rerun_button = gr.Button("只重跑失败章节")
                     cancel_button = gr.Button("取消任务")
-                    delete_button = gr.Button("删除任务")
+                    delete_button = gr.Button("删除选中任务及输出文件", variant="stop")
                 action_message = gr.Textbox(label="操作结果")
-                detail_summary = gr.Textbox(label="任务摘要", lines=10)
+                detail_summary = gr.Textbox(label="任务详情", lines=12)
                 chapter_table = gr.Dataframe(
                     headers=[
                         "index",
@@ -496,18 +524,40 @@ def build_ui() -> gr.Blocks:
                 )
                 detail_download = gr.File(label="下载结果 EPUB")
 
-            with gr.Tab("已完成文件"):
-                refresh_outputs = gr.Button("刷新文件列表")
-                outputs = gr.Dataframe(headers=["文件名", "大小", "路径"], value=output_files_table, interactive=False)
-                selected_output = gr.Textbox(label="选中的文件路径", visible=False)
-                output_download = gr.File(label="下载选中文件")
-                delete_output_button = gr.Button("删除选中文件")
+            with gr.Tab("设置"):
+                with gr.Accordion("翻译默认设置", open=True):
+                    output_mode_setting = gr.Radio(
+                        list(OUTPUT_MODE_LABELS.values()),
+                        label="输出模式",
+                        value=output_mode_label(CONFIG.default_output_mode),
+                    )
+                    failure_policy_setting = gr.Radio(
+                        list(FAILURE_POLICY_LABELS.values()),
+                        label="章节失败策略",
+                        value=failure_policy_label(CONFIG.default_chapter_failure_policy),
+                    )
+                    with gr.Row():
+                        translate_titles_setting = gr.Checkbox(label="翻译标题", value=CONFIG.default_translate_titles)
+                        translate_footnotes_setting = gr.Checkbox(label="翻译脚注", value=CONFIG.default_translate_footnotes)
 
-            with gr.Tab("LLM 设置"):
-                gr.Textbox(label="LLM API 地址", value=CONFIG.llm_base_url, interactive=False)
-                gr.Textbox(label="模型名称", value=CONFIG.llm_model, interactive=False)
-                gr.Textbox(label="API key", value=mask_secret(CONFIG.llm_api_key), interactive=False)
-                gr.Markdown("第一版从环境变量读取 LLM 设置；修改 `.env` 后重启服务生效。")
+                with gr.Accordion("LLM 设置", open=True):
+                    provider = gr.Dropdown(list(PROVIDER_BASE_URLS.keys()), label="Provider", value="Custom")
+                    llm_base_url = gr.Textbox(label="BASE URL", value=CONFIG.llm_base_url)
+                    llm_api_key = gr.Textbox(label="API KEY", value=CONFIG.llm_api_key, type="password")
+                    with gr.Row():
+                        llm_model = gr.Dropdown(
+                            choices=[CONFIG.llm_model],
+                            value=CONFIG.llm_model,
+                            label="模型名称",
+                            allow_custom_value=True,
+                        )
+                        refresh_models_button = gr.Button("刷新模型")
+                        test_model_button = gr.Button("测试模型")
+                    llm_context_window = gr.Number(label="上下文大小", value=CONFIG.llm_context_window, precision=0)
+                    llm_message = gr.Textbox(label="LLM 操作结果", lines=3)
+
+                save_settings_button = gr.Button("保存设置", variant="primary")
+                settings_message = gr.Textbox(label="保存结果", lines=3)
 
         start_button.click(
             create_and_start_job,
@@ -515,14 +565,7 @@ def build_ui() -> gr.Blocks:
                 epub_file,
                 source_language,
                 target_language,
-                mode,
-                batch_size,
-                max_batch_chars,
-                max_batch_retries,
-                failure_policy,
                 user_prompt,
-                translate_titles,
-                translate_footnotes,
                 translation_scope,
                 preview_chapter,
                 preview_start_char,
@@ -532,12 +575,12 @@ def build_ui() -> gr.Blocks:
         )
         preview_button.click(
             preview_epub,
-            inputs=[epub_file, translate_titles, translate_footnotes],
+            inputs=[epub_file],
             outputs=[epub_preview_summary, chapter_table_preview, preview_chapter, epub_reader],
         )
         epub_file.change(
             preview_epub,
-            inputs=[epub_file, translate_titles, translate_footnotes],
+            inputs=[epub_file],
             outputs=[epub_preview_summary, chapter_table_preview, preview_chapter, epub_reader],
         )
         preview_translate_button.click(
@@ -545,13 +588,7 @@ def build_ui() -> gr.Blocks:
             inputs=[
                 epub_file,
                 target_language,
-                mode,
-                batch_size,
-                max_batch_chars,
-                max_batch_retries,
                 user_prompt,
-                translate_titles,
-                translate_footnotes,
                 preview_chapter,
                 preview_start_char,
                 preview_char_count,
@@ -559,15 +596,38 @@ def build_ui() -> gr.Blocks:
             outputs=[translation_preview_message, epub_reader],
         )
         refresh_jobs.click(jobs_table, outputs=jobs)
-        detail_button.click(job_detail, inputs=detail_job_id, outputs=[detail_summary, chapter_table, detail_download])
-        resume_button.click(resume_job, inputs=detail_job_id, outputs=action_message)
-        rerun_button.click(rerun_failed, inputs=detail_job_id, outputs=action_message)
-        cancel_button.click(cancel_job, inputs=detail_job_id, outputs=action_message)
-        delete_button.click(delete_job, inputs=detail_job_id, outputs=[action_message, jobs])
-        refresh_outputs.click(output_files_table, outputs=outputs)
-        outputs.select(choose_output, inputs=outputs, outputs=[selected_output])
-        selected_output.change(lambda path: path if path else None, inputs=selected_output, outputs=output_download)
-        delete_output_button.click(delete_output, inputs=selected_output, outputs=[outputs, output_download])
+        jobs.select(select_job_from_table, inputs=jobs, outputs=[selected_job_id, detail_summary, chapter_table, detail_download])
+        refresh_selected_button.click(
+            refresh_selected_job,
+            inputs=selected_job_id,
+            outputs=[jobs, detail_summary, chapter_table, detail_download],
+        )
+        resume_button.click(resume_job, inputs=selected_job_id, outputs=action_message)
+        rerun_button.click(rerun_failed, inputs=selected_job_id, outputs=action_message)
+        cancel_button.click(cancel_job, inputs=selected_job_id, outputs=action_message)
+        delete_button.click(
+            delete_selected_job,
+            inputs=selected_job_id,
+            outputs=[action_message, jobs, selected_job_id, detail_summary, chapter_table, detail_download],
+        )
+
+        provider.change(provider_changed, inputs=provider, outputs=llm_base_url)
+        refresh_models_button.click(refresh_models, inputs=[llm_base_url, llm_api_key, llm_model], outputs=[llm_model, llm_message])
+        test_model_button.click(test_model, inputs=[llm_base_url, llm_api_key, llm_model, llm_context_window], outputs=llm_message)
+        save_settings_button.click(
+            save_settings,
+            inputs=[
+                llm_base_url,
+                llm_api_key,
+                llm_model,
+                llm_context_window,
+                output_mode_setting,
+                failure_policy_setting,
+                translate_titles_setting,
+                translate_footnotes_setting,
+            ],
+            outputs=settings_message,
+        )
 
     return demo
 
@@ -576,4 +636,8 @@ def main() -> None:
     setup_logging()
     store.mark_stale_running_as_paused()
     demo = build_ui()
-    demo.queue().launch(server_name=CONFIG.app_host, server_port=CONFIG.app_port)
+    demo.queue().launch(
+        server_name=CONFIG.app_host,
+        server_port=CONFIG.app_port,
+        allowed_paths=[str(CONFIG.output_dir.resolve())],
+    )

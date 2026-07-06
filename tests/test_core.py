@@ -235,10 +235,13 @@ def _test_config(data_dir: Path) -> Config:
         llm_top_p=0.8,
         default_source_language="English",
         default_target_language="Simplified Chinese",
+        default_output_mode="append_block",
         default_batch_size=2,
         default_max_batch_chars=6000,
         default_batch_retries=3,
         default_chapter_failure_policy="stop_on_failed_chapter",
+        default_translate_titles=True,
+        default_translate_footnotes=True,
         log_level="INFO",
     )
 
