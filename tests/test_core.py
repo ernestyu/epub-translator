@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+from app.batcher import make_batches
+from app.config import Config
+from app.epub_io import read_epub_info, unpack_epub
+from app.extractor import apply_translations, extract_text_blocks, parse_xhtml, save_xhtml
+from app.job_store import JobStore
+from app.models import TextBlock
+from app.packager import _write_epub
+from app.translator import TranslationValidationError, parse_and_validate
+import app.worker as worker_module
+
+
+class CoreTests(unittest.TestCase):
+    def test_batcher_respects_item_and_character_limits(self) -> None:
+        blocks = [
+            TextBlock(block_id="a", tag="p", text="a" * 3),
+            TextBlock(block_id="b", tag="p", text="b" * 3),
+            TextBlock(block_id="c", tag="p", text="c" * 10),
+        ]
+        batches = make_batches(blocks, max_items=2, max_chars=6)
+        self.assertEqual([[block.block_id for block in batch] for batch in batches], [["a", "b"], ["c"]])
+
+    def test_parse_and_validate_repairs_code_fence_and_reorders_by_id(self) -> None:
+        raw = """```json
+{"items":[{"id":"b","translation":"二"},{"id":"a","translation":"一"}]}
+```"""
+        result = parse_and_validate(raw, [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}])
+        self.assertEqual(result, {"a": "一", "b": "二"})
+
+    def test_parse_and_validate_rejects_length_mismatch(self) -> None:
+        with self.assertRaises(TranslationValidationError):
+            parse_and_validate(json.dumps({"items": []}), [{"id": "a", "text": "one"}])
+
+    def test_epub_unpack_spine_extract_insert_and_repackage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "book.epub"
+            work = tmp_path / "work"
+            repacked = tmp_path / "repacked.epub"
+            _create_sample_epub(source)
+
+            unpack_epub(source, work)
+            info = read_epub_info(work)
+            self.assertEqual(len(info.chapters), 2)
+            self.assertEqual(info.chapters[0].href, "Text/ch1.xhtml")
+
+            soup = parse_xhtml(info.chapters[0].abs_path)
+            blocks = extract_text_blocks(soup, "chapter_000")
+            self.assertEqual([block.tag for block in blocks], ["h1", "p", "li"])
+            translations = {block.block_id: f"T:{block.text}" for block in blocks}
+            apply_translations(soup, blocks, translations, "append_block")
+            save_xhtml(soup, info.chapters[0].abs_path)
+            self.assertIn("bilingual-translation", info.chapters[0].abs_path.read_text(encoding="utf-8"))
+
+            _write_epub(work, repacked)
+            with zipfile.ZipFile(repacked) as zf:
+                self.assertEqual(zf.namelist()[0], "mimetype")
+                self.assertEqual(zf.getinfo("mimetype").compress_type, zipfile.ZIP_STORED)
+
+    def test_worker_finishes_job_with_mock_translator_and_writes_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "book.epub"
+            _create_sample_epub(source)
+            config = _test_config(tmp_path / "data")
+            store = JobStore(config)
+            job = store.create_job(
+                uploaded_path=source,
+                original_filename="book.epub",
+                source_language="English",
+                target_language="Simplified Chinese",
+                mode="append_block",
+                batch_size=2,
+                max_batch_chars=6000,
+                max_batch_retries=3,
+                chapter_failure_policy="stop_on_failed_chapter",
+                user_prompt=None,
+                translate_titles=True,
+                translate_footnotes=True,
+                translate_toc=False,
+            )
+
+            original_translator = worker_module.BatchTranslator
+            worker_module.BatchTranslator = FakeBatchTranslator
+            try:
+                worker_module.run_job(config, store, job.job_id)
+            finally:
+                worker_module.BatchTranslator = original_translator
+
+            finished = store.load(job.job_id)
+            self.assertEqual(finished.status, "finished")
+            self.assertTrue(Path(finished.output_path).exists())
+            self.assertTrue(Path(finished.chapters[0].translated_path).exists())
+            self.assertIn(
+                "bilingual-translation",
+                Path(finished.chapters[0].translated_path).read_text(encoding="utf-8"),
+            )
+
+
+class FakeBatchTranslator:
+    def __init__(self, config: Config) -> None:
+        self.config = config
+
+    def translate_batch(self, blocks, target_language, mode, user_prompt, max_retries):
+        return {block.block_id: f"T:{block.text}" for block in blocks}
+
+
+def _create_sample_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>""",
+        )
+        zf.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <manifest>
+    <item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="Text/ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="style" href="Styles/main.css" media-type="text/css"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+  </spine>
+</package>""",
+        )
+        zf.writestr(
+            "OEBPS/Text/ch1.xhtml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>One</title></head>
+<body><h1>Chapter One</h1><p>Hello world.</p><ul><li>First item.</li></ul><pre>skip me</pre></body>
+</html>""",
+        )
+        zf.writestr(
+            "OEBPS/Text/ch2.xhtml",
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title></head><body><p>Second.</p></body></html>""",
+        )
+        zf.writestr("OEBPS/Styles/main.css", "body { margin: 1em; }")
+
+
+def _test_config(data_dir: Path) -> Config:
+    return Config(
+        data_dir=data_dir,
+        jobs_dir=data_dir / "jobs",
+        output_dir=data_dir / "output",
+        cache_dir=data_dir / "cache",
+        logs_dir=data_dir / "logs",
+        app_host="127.0.0.1",
+        app_port=7860,
+        llm_base_url="http://example.invalid/v1",
+        llm_api_key="test",
+        llm_model="test-model",
+        llm_timeout_seconds=1,
+        llm_temperature=0.1,
+        llm_top_p=0.8,
+        default_source_language="English",
+        default_target_language="Simplified Chinese",
+        default_batch_size=2,
+        default_max_batch_chars=6000,
+        default_batch_retries=3,
+        default_chapter_failure_policy="stop_on_failed_chapter",
+        log_level="INFO",
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()

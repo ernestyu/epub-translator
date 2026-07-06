@@ -11,8 +11,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+COPY app ./app
 
-RUN mkdir -p /data/input /data/output /data/cache /data/logs
+RUN mkdir -p /data/input /data/output /data/cache /data/jobs /data/logs
 
 EXPOSE 7860
 
