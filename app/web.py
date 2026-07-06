@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from html import escape
 from pathlib import Path
 
 import gradio as gr
@@ -40,6 +41,37 @@ LANGUAGES = [
 ]
 PREVIEW_MAX_CHARS = 5000
 APP_CSS = """
+#page-nav {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 16px;
+}
+
+.page-nav-label {
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-sm);
+    margin-right: 4px;
+}
+
+.page-nav-button {
+    background: var(--button-secondary-background-fill);
+    border: 1px solid var(--border-color-primary);
+    border-radius: 6px;
+    color: var(--button-secondary-text-color);
+    cursor: pointer;
+    font: inherit;
+    min-height: 36px;
+    padding: 6px 14px;
+}
+
+.page-nav-button.active {
+    background: var(--button-primary-background-fill);
+    border-color: var(--button-primary-border-color);
+    color: var(--button-primary-text-color);
+}
+
 #epub-upload button .wrap {
     font-size: 0 !important;
 }
@@ -58,24 +90,24 @@ APP_CSS = """
 APP_HEAD = """
 <script>
 (() => {
-    const pageMap = {
-        "New Translation": "new-page",
-        "Jobs": "jobs-page",
-        "Settings": "settings-page",
-        "\\u65b0\\u5efa\\u7ffb\\u8bd1\\u4efb\\u52a1": "new-page",
-        "\\u4efb\\u52a1\\u5217\\u8868": "jobs-page",
-        "\\u8bbe\\u7f6e": "settings-page",
-    };
     const panelIds = ["new-page", "jobs-page", "settings-page"];
-    const applyPageVisibility = () => {
-        const checked = document.querySelector("#page-selector input[type='radio']:checked");
-        const activeId = pageMap[checked?.value] || "new-page";
+    const setActivePage = (activeId) => {
         for (const id of panelIds) {
             const panel = document.getElementById(id);
             if (panel) {
                 panel.style.display = id === activeId ? "block" : "none";
             }
         }
+        for (const button of document.querySelectorAll("#page-nav button[data-page]")) {
+            const active = button.dataset.page === activeId;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-pressed", active ? "true" : "false");
+        }
+    };
+    const applyPageVisibility = () => {
+        const activeButton = document.querySelector("#page-nav button.active[data-page]")
+            || document.querySelector("#page-nav button[data-page]");
+        setActivePage(activeButton?.dataset.page || "new-page");
     };
     const patchUploadPrompt = () => {
         const prompt = document.querySelector("#epub-upload button .wrap");
@@ -88,8 +120,15 @@ APP_HEAD = """
         patchUploadPrompt();
     };
     document.addEventListener("DOMContentLoaded", patchUi);
-    document.addEventListener("change", patchUi, true);
-    document.addEventListener("click", () => setTimeout(patchUi, 0), true);
+    document.addEventListener("click", (event) => {
+        const button = event.target.closest("#page-nav button[data-page]");
+        if (button) {
+            event.preventDefault();
+            setActivePage(button.dataset.page);
+            return;
+        }
+        setTimeout(patchUi, 0);
+    }, true);
     new MutationObserver(patchUi).observe(document.documentElement, {
         childList: true,
         subtree: true,
@@ -522,14 +561,30 @@ def save_settings(
     )
 
 
-def page_choices() -> list[str]:
-    return [t("tab_new"), t("tab_jobs"), t("tab_settings")]
+def page_nav_html() -> str:
+    pages = [
+        ("new-page", t("tab_new"), True),
+        ("jobs-page", t("tab_jobs"), False),
+        ("settings-page", t("tab_settings"), False),
+    ]
+    buttons = "\n".join(
+        (
+            f'<button type="button" class="page-nav-button{" active" if active else ""}" '
+            f'data-page="{page_id}" aria-pressed="{"true" if active else "false"}">{escape(label)}</button>'
+        )
+        for page_id, label, active in pages
+    )
+    return (
+        f'<div id="page-nav" role="navigation" aria-label="{escape(t("navigation"))}">\n'
+        f'  <span class="page-nav-label">{escape(t("navigation"))}</span>\n'
+        f"{buttons}\n"
+        "</div>"
+    )
 
 
 def switch_ui_language(ui_language: str):
     CONFIG.ui_language = ui_language
     env_path = save_env_settings(CONFIG)
-    navigation_choices = page_choices()
     scope_choices = [t("scope_all"), t("scope_preview")]
     job_headers = [
         t("job_id"),
@@ -558,7 +613,7 @@ def switch_ui_language(ui_language: str):
     failure_choices = failure_policy_labels(CONFIG.ui_language)
     return (
         gr.update(value=f"# {t('app_title')}"),
-        gr.update(label=t("navigation"), choices=navigation_choices, value=navigation_choices[0]),
+        gr.update(value=page_nav_html()),
         gr.update(label=t("ui_language")),
         gr.update(label=t("action_result"), value=t("language_switched", path=env_path.resolve())),
         gr.update(label=t("upload_epub")),
@@ -614,7 +669,7 @@ def build_ui() -> gr.Blocks:
     with gr.Blocks(title=t("app_title")) as demo:
         page_title = gr.Markdown(f"# {t('app_title')}")
 
-        page_selector = gr.Radio(page_choices(), value=t("tab_new"), label=t("navigation"), elem_id="page-selector")
+        page_nav = gr.HTML(page_nav_html())
 
         with gr.Column(elem_id="new-page") as new_page:
             ui_language_selector = gr.Dropdown(
@@ -805,7 +860,7 @@ def build_ui() -> gr.Blocks:
             inputs=ui_language_selector,
             outputs=[
                 page_title,
-                page_selector,
+                page_nav,
                 ui_language_selector,
                 language_message,
                 epub_file,

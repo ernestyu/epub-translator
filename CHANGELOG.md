@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 - 2026-07-06
+
+### Fixed
+
+- Replaced the Gradio radio-based page selector with plain front-end navigation buttons so **Jobs** and **Settings** open immediately when clicked.
+- Kept the three-page layout fully localizable while avoiding Gradio tab labels and radio state synchronization issues.
+
 ## 0.1.3 - 2026-07-06
 
 ### Changed
