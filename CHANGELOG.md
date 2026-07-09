@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5 - 2026-07-09
+
+### Changed
+
+- In `append_block` mode, table translations now keep the original table intact and insert a translated table copy after it.
+- Added bilingual table styling so copied translation tables are visually separated without changing the source table layout.
+
+### Fixed
+
+- Fixed table layout corruption caused by inserting translated `td`/`th` siblings into existing table rows.
+- Avoided duplicate extraction for table cells that already contain translatable child elements.
+
 ## 0.1.4 - 2026-07-06
 
 ### Fixed

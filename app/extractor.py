@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 from pathlib import Path
 
@@ -19,6 +20,7 @@ TRANSLATABLE_TAGS = {
     "h4",
     "h5",
     "h6",
+    "caption",
     "figcaption",
     "td",
     "th",
@@ -54,6 +56,8 @@ def extract_text_blocks(
             continue
         if element.find(SKIP_TAGS):
             continue
+        if tag_name in TABLE_CELL_TAGS and _has_translatable_descendant(element):
+            continue
         text = element.get_text(" ", strip=True)
         if not text or PUNCT_OR_NUMBER_RE.match(text):
             continue
@@ -63,14 +67,19 @@ def extract_text_blocks(
 
 
 def apply_translations(soup: BeautifulSoup, blocks: list[TextBlock], translations: dict[str, str], mode: str) -> None:
+    table_blocks: dict[int, tuple[Tag, list[TextBlock]]] = {}
     for block in blocks:
         translation = translations.get(block.block_id)
         if not translation:
             continue
         element = block.element
+        table = _nearest_table(element)
         if mode == "replace":
-            element.clear()
-            element.string = translation
+            _replace_element_text(element, translation)
+            continue
+        if table is not None:
+            table_key = id(table)
+            table_blocks.setdefault(table_key, (table, []))[1].append(block)
             continue
 
         translated = soup.new_tag(element.name)
@@ -78,6 +87,10 @@ def apply_translations(soup: BeautifulSoup, blocks: list[TextBlock], translation
         translated["data-source-block-id"] = block.block_id
         translated.string = translation
         element.insert_after(translated)
+
+    if mode != "replace":
+        for table, table_block_list in table_blocks.values():
+            _insert_translated_table_copy(table, table_block_list, translations)
 
 
 def save_xhtml(soup: BeautifulSoup, path: Path) -> None:
@@ -111,7 +124,11 @@ def inject_bilingual_style(path: Path) -> None:
         else:
             soup.insert(0, head)
     style = soup.new_tag("style", id="bilingual-style", type="text/css")
-    style.string = ".bilingual-translation{margin-top:0.2em;margin-bottom:0.8em;opacity:0.85;}"
+    style.string = (
+        ".bilingual-translation{margin-top:0.2em;margin-bottom:0.8em;opacity:0.85;}"
+        ".bilingual-table-translation{margin-top:0.6em;margin-bottom:0.8em;opacity:0.92;"
+        "page-break-inside:avoid;break-inside:avoid;}"
+    )
     head.append(style)
     save_xhtml(soup, path)
 
@@ -121,6 +138,75 @@ def _has_skip_ancestor(element: Tag) -> bool:
         if isinstance(parent, Tag) and parent.name and parent.name.lower() in SKIP_TAGS:
             return True
     return False
+
+
+TABLE_CELL_TAGS = {"td", "th"}
+
+
+def _has_translatable_descendant(element: Tag) -> bool:
+    for descendant in element.find_all(TRANSLATABLE_TAGS):
+        if isinstance(descendant, Tag) and descendant is not element:
+            return True
+    return False
+
+
+def _nearest_table(element: Tag) -> Tag | None:
+    for parent in [element, *element.parents]:
+        if isinstance(parent, Tag) and parent.name and parent.name.lower() == "table":
+            return parent
+    return None
+
+
+def _replace_element_text(element: Tag, translation: str) -> None:
+    element.clear()
+    element.string = translation
+
+
+def _insert_translated_table_copy(table: Tag, blocks: list[TextBlock], translations: dict[str, str]) -> None:
+    marker_attr = "data-bilingual-temp-block-id"
+    marked_elements: list[Tag] = []
+    for block in blocks:
+        translation = translations.get(block.block_id)
+        if not translation or not isinstance(block.element, Tag):
+            continue
+        block.element[marker_attr] = block.block_id
+        marked_elements.append(block.element)
+
+    translated_table = copy.deepcopy(table)
+    for original in marked_elements:
+        original.attrs.pop(marker_attr, None)
+
+    _append_class(translated_table, "bilingual-table-translation")
+    translated_table["data-source-table"] = "true"
+
+    for block in blocks:
+        translation = translations.get(block.block_id)
+        if not translation:
+            continue
+        translated_element = translated_table.find(attrs={marker_attr: block.block_id})
+        if isinstance(translated_element, Tag):
+            translated_element.attrs.pop(marker_attr, None)
+            _replace_element_text(translated_element, translation)
+
+    for leftover in translated_table.find_all(attrs={marker_attr: True}):
+        if isinstance(leftover, Tag):
+            leftover.attrs.pop(marker_attr, None)
+
+    table.insert_after(translated_table)
+
+
+def _append_class(element: Tag, class_name: str) -> None:
+    existing = element.get("class")
+    if existing is None:
+        element["class"] = class_name
+        return
+    if isinstance(existing, list):
+        classes = [str(item) for item in existing]
+    else:
+        classes = str(existing).split()
+    if class_name not in classes:
+        classes.append(class_name)
+    element["class"] = " ".join(classes)
 
 
 def _looks_like_footnote(element: Tag) -> bool:

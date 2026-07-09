@@ -99,13 +99,13 @@ This means jobs, logs, cache, and output EPUB files survive container recreation
 Build the image:
 
 ```bash
-docker build -t epub-translator-web:0.1.4 .
+docker build -t epub-translator-web:0.1.5 .
 ```
 
 Run it:
 
 ```bash
-docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.4
+docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.5
 ```
 
 For Linux hosts using local LLM services, make sure `host.docker.internal` is available. The Compose file already includes:
@@ -225,7 +225,7 @@ python -m unittest discover -s tests
 
 ## Version
 
-Current version: `0.1.4`
+Current version: `0.1.5`
 
 ## License
 

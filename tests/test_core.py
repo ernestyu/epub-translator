@@ -87,6 +87,62 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(zf.namelist()[0], "mimetype")
                 self.assertEqual(zf.getinfo("mimetype").compress_type, zipfile.ZIP_STORED)
 
+    def test_append_block_keeps_original_table_and_adds_translated_table_copy(self) -> None:
+        soup = _parse_xhtml_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body>
+  <table class="facts">
+    <tr><th>Name</th><th>Role</th></tr>
+    <tr><td>Alpha</td><td>First item</td></tr>
+  </table>
+</body>
+</html>"""
+        )
+        blocks = extract_text_blocks(soup, "chapter_000")
+        self.assertEqual([block.tag for block in blocks], ["th", "th", "td", "td"])
+
+        translations = {block.block_id: f"T:{block.text}" for block in blocks}
+        apply_translations(soup, blocks, translations, "append_block")
+
+        tables = soup.find_all("table")
+        self.assertEqual(len(tables), 2)
+        original, translated = tables
+        self.assertEqual([cell.get_text(" ", strip=True) for cell in original.find_all(["th", "td"])], ["Name", "Role", "Alpha", "First item"])
+        self.assertEqual(
+            [cell.get_text(" ", strip=True) for cell in translated.find_all(["th", "td"])],
+            ["T:Name", "T:Role", "T:Alpha", "T:First item"],
+        )
+        self.assertEqual(len(original.find_all("td")), 2)
+        self.assertEqual(len(translated.find_all("td")), 2)
+        self.assertIn("bilingual-table-translation", str(translated.get("class")))
+
+    def test_replace_mode_updates_table_cells_without_copying_table(self) -> None:
+        soup = _parse_xhtml_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body><table><tr><td>Alpha</td><td>Beta</td></tr></table></body>
+</html>"""
+        )
+        blocks = extract_text_blocks(soup, "chapter_000")
+        translations = {block.block_id: f"T:{block.text}" for block in blocks}
+
+        apply_translations(soup, blocks, translations, "replace")
+
+        tables = soup.find_all("table")
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([cell.get_text(" ", strip=True) for cell in tables[0].find_all("td")], ["T:Alpha", "T:Beta"])
+
+    def test_table_cells_with_paragraphs_do_not_translate_parent_cell_twice(self) -> None:
+        soup = _parse_xhtml_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body><table><tr><td><p>Nested text</p></td><td>Plain text</td></tr></table></body>
+</html>"""
+        )
+        blocks = extract_text_blocks(soup, "chapter_000")
+        self.assertEqual([block.tag for block in blocks], ["p", "td"])
+
     def test_worker_finishes_job_with_mock_translator_and_writes_checkpoints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -215,6 +271,13 @@ def _create_sample_epub(path: Path) -> None:
 <html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title></head><body><p>Second.</p></body></html>""",
         )
         zf.writestr("OEBPS/Styles/main.css", "body { margin: 1em; }")
+
+
+def _parse_xhtml_text(content: str):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "sample.xhtml"
+        path.write_text(content, encoding="utf-8")
+        return parse_xhtml(path)
 
 
 def _test_config(data_dir: Path) -> Config:
