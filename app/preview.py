@@ -10,10 +10,12 @@ from app.batcher import make_batches
 from app.config import Config
 from app.epub_io import read_epub_info, unpack_epub
 from app.extractor import apply_translations, extract_text_blocks, inject_bilingual_style, parse_xhtml, save_xhtml, title_from_soup
+from app.glossary import match_glossary_terms, parse_glossary
 from app.i18n import translate
 from app.models import TextBlock
 from app.packager import _write_epub
-from app.translator import BatchTranslator
+from app.translator import BatchTranslator, PartialTranslationError
+from app.worker import _neighbor_context
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,7 @@ def build_translated_preview_epub(
     translate_titles: bool,
     translate_footnotes: bool,
     config: Config,
+    glossary_text: str | None = None,
 ) -> Path:
     preview_dir = config.cache_dir / "previews"
     preview_dir.mkdir(parents=True, exist_ok=True)
@@ -157,23 +160,34 @@ def build_translated_preview_epub(
 
         translator = BatchTranslator(config)
         translations: dict[str, str] = {}
+        failed_block_ids: set[str] = set()
+        glossary_terms = parse_glossary(glossary_text)
         for batch in make_batches(
             selected,
             max_items=batch_size,
             max_chars=max_batch_chars,
             max_tokens=config.llm_max_input_tokens,
         ):
-            translations.update(
-                translator.translate_batch(
-                    batch,
-                    target_language=target_language,
-                    mode=mode,
-                    user_prompt=user_prompt,
-                    max_retries=max_retries,
+            previous_context, next_context = _neighbor_context(blocks, batch)
+            matched_glossary = match_glossary_terms([block.text for block in batch], glossary_terms)
+            try:
+                translations.update(
+                    translator.translate_batch(
+                        batch,
+                        target_language=target_language,
+                        mode=mode,
+                        user_prompt=user_prompt,
+                        max_retries=max_retries,
+                        previous_context=previous_context,
+                        next_context=next_context,
+                        glossary_terms=matched_glossary,
+                    )
                 )
-            )
+            except PartialTranslationError as exc:
+                translations.update(exc.translations)
+                failed_block_ids.update(block_id for block_id in exc.failed_ids if block_id not in exc.translations)
 
-        apply_translations(soup, selected, translations, mode)
+        apply_translations(soup, selected, translations, mode, failed_block_ids=failed_block_ids)
         save_xhtml(soup, chapter.abs_path)
         inject_bilingual_style(chapter.abs_path)
         output_path = preview_dir / f"preview-{next(tempfile._get_candidate_names())}.epub"

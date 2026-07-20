@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 
-JobStatus = Literal["queued", "running", "paused", "finished", "failed", "cancelled"]
+JobStatus = Literal["queued", "running", "paused", "finished", "finished_with_warnings", "failed", "cancelled"]
 ChapterStatus = Literal["pending", "running", "done", "failed", "skipped"]
 OutputMode = Literal["append_block", "replace"]
 FailurePolicy = Literal["stop_on_failed_chapter", "keep_original_on_failed_chapter"]
@@ -29,6 +29,8 @@ class ChapterState:
     status: ChapterStatus = "pending"
     text_blocks: int = 0
     done_text_blocks: int = 0
+    failed_text_blocks: int = 0
+    warning_text_blocks: int = 0
     batches: int = 0
     done_batches: int = 0
     failed_batches: int = 0
@@ -78,10 +80,13 @@ class JobState:
     skipped_chapters: int = 0
     total_text_blocks: int = 0
     done_text_blocks: int = 0
+    failed_text_blocks: int = 0
+    warning_text_blocks: int = 0
     last_error: str | None = None
     cancel_requested: bool = False
     translate_start_block: int | None = None
     translate_end_block: int | None = None
+    glossary_text: str | None = None
     chapters: list[ChapterState] = field(default_factory=list)
 
     @classmethod
@@ -102,3 +107,5 @@ class JobState:
         self.skipped_chapters = sum(1 for chapter in self.chapters if chapter.status == "skipped")
         self.total_text_blocks = sum(chapter.text_blocks for chapter in self.chapters)
         self.done_text_blocks = sum(chapter.done_text_blocks for chapter in self.chapters)
+        self.failed_text_blocks = sum(chapter.failed_text_blocks for chapter in self.chapters)
+        self.warning_text_blocks = sum(chapter.warning_text_blocks for chapter in self.chapters)

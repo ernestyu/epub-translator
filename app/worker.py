@@ -7,11 +7,12 @@ from pathlib import Path
 from app.batcher import make_batches
 from app.config import Config
 from app.extractor import apply_translations, extract_text_blocks, parse_xhtml, save_xhtml
+from app.glossary import GlossaryTerm, match_glossary_terms, parse_glossary
 from app.i18n import translate
 from app.job_store import JobStore
 from app.models import JobState
 from app.packager import package_job
-from app.translator import BatchTranslator
+from app.translator import BatchTranslator, PartialTranslationError
 from app.utils import atomic_write_json, now_ts
 
 
@@ -56,7 +57,15 @@ def run_job(config: Config, store: JobStore, job_id: str, failed_only: bool = Fa
     translator = BatchTranslator(config)
     try:
         job = store.load(job_id)
-        allowed_indexes = {chapter.index for chapter in job.chapters if chapter.status == "failed"} if failed_only else None
+        allowed_indexes = (
+            {
+                chapter.index
+                for chapter in job.chapters
+                if chapter.status == "failed" or chapter.failed_text_blocks or chapter.warning_text_blocks
+            }
+            if failed_only
+            else None
+        )
         _prepare_resume(job, failed_only)
         job.status = "running"
         job.cancel_requested = False
@@ -113,9 +122,13 @@ def run_job(config: Config, store: JobStore, job_id: str, failed_only: bool = Fa
         output_path = package_job(job, config.output_dir)
         job = store.load(job_id)
         job.output_path = output_path
-        job.status = "finished"
+        job.status = "finished_with_warnings" if job.failed_text_blocks or job.warning_text_blocks else "finished"
         job.finished_at = now_ts()
-        job.last_error = None
+        job.last_error = (
+            f"Completed with {job.failed_text_blocks} failed text block(s) kept as original."
+            if job.status == "finished_with_warnings"
+            else None
+        )
         store.save(job)
         _append_job_log(job, f"job finished output={output_path}")
     finally:
@@ -129,10 +142,22 @@ def _prepare_resume(job: JobState, failed_only: bool) -> None:
         if chapter.status == "done" and not translated_path.exists():
             chapter.status = "pending"
             chapter.done_text_blocks = 0
+            chapter.failed_text_blocks = 0
+            chapter.warning_text_blocks = 0
             chapter.done_batches = 0
         if chapter.status == "failed":
             chapter.status = "pending"
             chapter.done_text_blocks = 0
+            chapter.failed_text_blocks = 0
+            chapter.warning_text_blocks = 0
+            chapter.done_batches = 0
+            chapter.failed_batches = 0
+            chapter.last_error = None
+        if failed_only and chapter.status == "done" and (chapter.failed_text_blocks or chapter.warning_text_blocks):
+            chapter.status = "pending"
+            chapter.done_text_blocks = 0
+            chapter.failed_text_blocks = 0
+            chapter.warning_text_blocks = 0
             chapter.done_batches = 0
             chapter.failed_batches = 0
             chapter.last_error = None
@@ -168,6 +193,7 @@ def _process_chapter(
         translate_footnotes=job.translate_footnotes,
     )
     blocks = _select_blocks_for_range(all_blocks, job.translate_start_block, job.translate_end_block, chapter_global_offset)
+    glossary_terms = parse_glossary(job.glossary_text)
     batches = make_batches(
         blocks,
         max_items=job.batch_size,
@@ -178,6 +204,8 @@ def _process_chapter(
 
     chapter.text_blocks = len(blocks)
     chapter.done_text_blocks = 0
+    chapter.failed_text_blocks = 0
+    chapter.warning_text_blocks = 0
     chapter.batches = len(batches)
     chapter.done_batches = 0
     chapter.failed_batches = 0
@@ -191,11 +219,14 @@ def _process_chapter(
         _append_job_log(job, f"chapter skipped index={chapter.index} reason=no selected text blocks")
         return
 
+    failed_block_ids: set[str] = set()
     for batch_index, batch in enumerate(batches):
         job = store.load(job.job_id)
         chapter = job.chapters[chapter_index]
         if job.cancel_requested:
             raise JobCancelled("Job cancelled")
+        previous_context, next_context = _neighbor_context(blocks, batch)
+        matched_glossary = match_glossary_terms([block.text for block in batch], glossary_terms)
         try:
             batch_translations = translator.translate_batch(
                 batch,
@@ -203,33 +234,97 @@ def _process_chapter(
                 mode=job.mode,
                 user_prompt=job.user_prompt,
                 max_retries=job.max_batch_retries,
+                previous_context=previous_context,
+                next_context=next_context,
+                glossary_terms=matched_glossary,
             )
             translations.update(batch_translations)
             chapter.done_batches += 1
             chapter.done_text_blocks += len(batch)
-            _write_chapter_batch_state(job, chapter_index, batch_index, "done", None)
+            _write_chapter_batch_state(
+                job,
+                chapter_index,
+                batch_index,
+                "done",
+                None,
+                translated_ids=[block.block_id for block in batch],
+                failed_ids=[],
+                glossary_terms=matched_glossary,
+            )
             store.save(job)
             _append_job_log(job, f"batch done chapter={chapter.index} batch={batch_index}")
+        except PartialTranslationError as exc:
+            translations.update(exc.translations)
+            failed_ids = [block_id for block_id in exc.failed_ids if block_id not in exc.translations]
+            failed_block_ids.update(failed_ids)
+            chapter.done_batches += 1
+            chapter.failed_batches += 1
+            chapter.done_text_blocks += len(exc.translations)
+            chapter.failed_text_blocks += len(failed_ids)
+            chapter.warning_text_blocks += len(failed_ids)
+            chapter.last_error = f"{type(exc).__name__}: {exc}"
+            _write_chapter_batch_state(
+                job,
+                chapter_index,
+                batch_index,
+                "warning",
+                chapter.last_error,
+                translated_ids=list(exc.translations),
+                failed_ids=failed_ids,
+                glossary_terms=matched_glossary,
+            )
+            store.save(job)
+            if job.chapter_failure_policy != "keep_original_on_failed_chapter":
+                raise
+            _append_job_log(
+                job,
+                f"batch warning chapter={chapter.index} batch={batch_index} failed_units={len(failed_ids)}",
+            )
         except Exception as exc:
             chapter.failed_batches += 1
             chapter.last_error = f"{type(exc).__name__}: {exc}"
-            _write_chapter_batch_state(job, chapter_index, batch_index, "failed", chapter.last_error)
+            _write_chapter_batch_state(
+                job,
+                chapter_index,
+                batch_index,
+                "failed",
+                chapter.last_error,
+                translated_ids=[],
+                failed_ids=[block.block_id for block in batch],
+                glossary_terms=matched_glossary,
+            )
             store.save(job)
             raise
 
-    apply_translations(soup, blocks, translations, job.mode)
+    _validate_chapter_coverage(blocks, translations, failed_block_ids, job.chapter_failure_policy)
+    apply_translations(soup, blocks, translations, job.mode, failed_block_ids=failed_block_ids)
     save_xhtml(soup, Path(chapter.translated_path))
     job = store.load(job.job_id)
     chapter = job.chapters[chapter_index]
     chapter.status = "done"
-    chapter.done_text_blocks = chapter.text_blocks
+    chapter.done_text_blocks = len(translations)
+    chapter.failed_text_blocks = len(failed_block_ids)
+    chapter.warning_text_blocks = len(failed_block_ids)
     chapter.done_batches = chapter.batches
     chapter.finished_at = now_ts()
-    chapter.last_error = None
+    chapter.last_error = (
+        f"{len(failed_block_ids)} text block(s) kept as original after translation failures."
+        if failed_block_ids
+        else None
+    )
     store.save(job)
 
 
-def _write_chapter_batch_state(job: JobState, chapter_index: int, batch_index: int, status: str, error: str | None) -> None:
+def _write_chapter_batch_state(
+    job: JobState,
+    chapter_index: int,
+    batch_index: int,
+    status: str,
+    error: str | None,
+    translated_ids: list[str] | None = None,
+    failed_ids: list[str] | None = None,
+    glossary_terms: list[GlossaryTerm] | None = None,
+) -> None:
     chapter = job.chapters[chapter_index]
     state_path = Path(job.translated_dir) / f"{chapter.id}.state.json"
     if state_path.exists():
@@ -244,7 +339,55 @@ def _write_chapter_batch_state(job: JobState, chapter_index: int, batch_index: i
     batches[batch_index]["status"] = status
     batches[batch_index]["attempts"] += 1
     batches[batch_index]["error"] = error
+    batches[batch_index]["translated_ids"] = translated_ids or []
+    batches[batch_index]["failed_ids"] = failed_ids or []
+    batches[batch_index]["glossary_terms"] = [term.to_prompt_dict() for term in (glossary_terms or [])]
     atomic_write_json(state_path, payload)
+
+
+def _neighbor_context(blocks: list[object], batch: list[object], max_chars: int = 500) -> tuple[str, str]:
+    if not blocks or not batch:
+        return "", ""
+    first_id = batch[0].block_id
+    last_id = batch[-1].block_id
+    index_by_id = {block.block_id: index for index, block in enumerate(blocks)}
+    first_index = index_by_id.get(first_id, 0)
+    last_index = index_by_id.get(last_id, first_index)
+    previous_texts: list[str] = []
+    total = 0
+    for block in reversed(blocks[:first_index]):
+        if total >= max_chars:
+            break
+        previous_texts.append(block.text)
+        total += len(block.text)
+    next_texts: list[str] = []
+    total = 0
+    for block in blocks[last_index + 1 :]:
+        if total >= max_chars:
+            break
+        next_texts.append(block.text)
+        total += len(block.text)
+    previous_context = " ".join(reversed(previous_texts))[-max_chars:]
+    next_context = " ".join(next_texts)[:max_chars]
+    return previous_context, next_context
+
+
+def _validate_chapter_coverage(
+    blocks: list[object],
+    translations: dict[str, str],
+    failed_block_ids: set[str],
+    failure_policy: str,
+) -> None:
+    source_ids = {block.block_id for block in blocks}
+    translated_ids = set(translations)
+    missing_ids = source_ids - translated_ids - failed_block_ids
+    empty_ids = {block_id for block_id, translation in translations.items() if block_id in source_ids and not translation.strip()}
+    if empty_ids:
+        raise RuntimeError(f"Coverage gate failed: empty translations for {len(empty_ids)} text block(s)")
+    if missing_ids:
+        raise RuntimeError(f"Coverage gate failed: missing translations for {len(missing_ids)} text block(s)")
+    if failed_block_ids and failure_policy != "keep_original_on_failed_chapter":
+        raise RuntimeError(f"Coverage gate failed: {len(failed_block_ids)} text block(s) failed")
 
 
 def _chapter_offsets(job: JobState) -> dict[int, int]:

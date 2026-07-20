@@ -15,9 +15,11 @@ EPUB Translator Web lets you upload an EPUB, preview it in the browser, translat
 - Persistent job state in `data/jobs/<job_id>/state.json`.
 - Chapter-level checkpoints in `data/jobs/<job_id>/translated/`.
 - Batch-level JSON validation, retry, cache, and conservative JSON repair.
+- Verifiable retry flow that keeps valid partial translations, retries missing IDs, and marks failed text blocks.
+- Neighbor context and per-batch glossary injection for better book-level consistency.
 - Token-budgeted batching based on `LLM_CONTEXT_WINDOW`.
 - OpenAI-compatible Chat Completions API support.
-- Job list, job detail, resume, rerun failed chapters, cancel, delete job and output.
+- Job list, job detail, resume, rerun failed/warning chapters, cancel, delete job and output.
 - Output EPUB files saved under `data/output/`.
 
 ## Quick Start
@@ -99,13 +101,13 @@ This means jobs, logs, cache, and output EPUB files survive container recreation
 Build the image:
 
 ```bash
-docker build -t epub-translator-web:0.1.5 .
+docker build -t epub-translator-web:0.1.6 .
 ```
 
 Run it:
 
 ```bash
-docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.5
+docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.6
 ```
 
 For Linux hosts using local LLM services, make sure `host.docker.internal` is available. The Compose file already includes:
@@ -124,12 +126,13 @@ The app has three tabs:
    - Upload an EPUB.
    - Preview the real EPUB rendering.
    - Select a chapter and a character range for sample translation.
+   - Optionally add glossary terms, one `source => target` pair per line or as JSON.
    - Run a full-book translation or only the selected preview range.
 
 2. **Jobs**
    - Refresh and select jobs.
    - View job details and chapter status.
-   - Resume jobs, rerun failed chapters, cancel jobs, or delete a job and its output.
+   - Resume jobs, rerun failed/warning chapters, cancel jobs, or delete a job and its output.
    - Download finished EPUB files.
 
 3. **Settings**
@@ -166,10 +169,13 @@ The UI language selector is at the top of the New Translation tab. The setting i
 3. XHTML chapters are processed in spine order.
 4. Translatable text blocks are extracted from tags such as `p`, `li`, `blockquote`, and headings.
 5. Text blocks are batched with an automatic token budget derived from `LLM_CONTEXT_WINDOW`.
-6. The LLM receives JSON input and must return JSON translations.
-7. Validated translations are inserted into the XHTML DOM.
-8. Each translated chapter is checkpointed to disk.
-9. The EPUB is repackaged with the required `mimetype` zip ordering.
+6. Each batch includes read-only neighbor context and only the glossary terms that appear in that batch.
+7. The LLM receives JSON input and must return JSON translations with the same IDs.
+8. The app validates JSON, ID coverage, duplicate/extra IDs, and empty translations.
+9. Valid partial translations are saved, missing IDs are retried, and stubborn failures are marked instead of silently dropped.
+10. Validated translations are inserted into the original XHTML DOM.
+11. Each translated chapter is checkpointed to disk.
+12. The EPUB is repackaged with the required `mimetype` zip ordering.
 
 The LLM is never asked to generate XHTML/XML.
 
@@ -225,7 +231,7 @@ python -m unittest discover -s tests
 
 ## Version
 
-Current version: `0.1.5`
+Current version: `0.1.6`
 
 ## License
 

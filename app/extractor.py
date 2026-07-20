@@ -66,16 +66,27 @@ def extract_text_blocks(
     return blocks
 
 
-def apply_translations(soup: BeautifulSoup, blocks: list[TextBlock], translations: dict[str, str], mode: str) -> None:
+def apply_translations(
+    soup: BeautifulSoup,
+    blocks: list[TextBlock],
+    translations: dict[str, str],
+    mode: str,
+    failed_block_ids: set[str] | None = None,
+) -> None:
+    failed_block_ids = failed_block_ids or set()
     table_blocks: dict[int, tuple[Tag, list[TextBlock]]] = {}
     for block in blocks:
         translation = translations.get(block.block_id)
-        if not translation:
+        failed = block.block_id in failed_block_ids
+        if not translation and not failed:
             continue
         element = block.element
         table = _nearest_table(element)
         if mode == "replace":
-            _replace_element_text(element, translation)
+            if translation:
+                _replace_element_text(element, translation)
+            elif failed:
+                _mark_failed_element(element)
             continue
         if table is not None:
             table_key = id(table)
@@ -83,14 +94,14 @@ def apply_translations(soup: BeautifulSoup, blocks: list[TextBlock], translation
             continue
 
         translated = soup.new_tag(element.name)
-        translated["class"] = "bilingual-translation"
+        translated["class"] = "bilingual-translation translation-failed" if failed else "bilingual-translation"
         translated["data-source-block-id"] = block.block_id
-        translated.string = translation
+        translated.string = translation or _failure_text()
         element.insert_after(translated)
 
     if mode != "replace":
         for table, table_block_list in table_blocks.values():
-            _insert_translated_table_copy(table, table_block_list, translations)
+            _insert_translated_table_copy(table, table_block_list, translations, failed_block_ids)
 
 
 def save_xhtml(soup: BeautifulSoup, path: Path) -> None:
@@ -126,6 +137,7 @@ def inject_bilingual_style(path: Path) -> None:
     style = soup.new_tag("style", id="bilingual-style", type="text/css")
     style.string = (
         ".bilingual-translation{margin-top:0.2em;margin-bottom:0.8em;opacity:0.85;}"
+        ".translation-failed{color:#8a3a00;font-style:italic;}"
         ".bilingual-table-translation{margin-top:0.6em;margin-bottom:0.8em;opacity:0.92;"
         "page-break-inside:avoid;break-inside:avoid;}"
     )
@@ -162,12 +174,20 @@ def _replace_element_text(element: Tag, translation: str) -> None:
     element.string = translation
 
 
-def _insert_translated_table_copy(table: Tag, blocks: list[TextBlock], translations: dict[str, str]) -> None:
+def _insert_translated_table_copy(
+    table: Tag,
+    blocks: list[TextBlock],
+    translations: dict[str, str],
+    failed_block_ids: set[str],
+) -> None:
     marker_attr = "data-bilingual-temp-block-id"
     marked_elements: list[Tag] = []
     for block in blocks:
         translation = translations.get(block.block_id)
-        if not translation or not isinstance(block.element, Tag):
+        failed = block.block_id in failed_block_ids
+        if not translation and not failed:
+            continue
+        if not isinstance(block.element, Tag):
             continue
         block.element[marker_attr] = block.block_id
         marked_elements.append(block.element)
@@ -181,12 +201,17 @@ def _insert_translated_table_copy(table: Tag, blocks: list[TextBlock], translati
 
     for block in blocks:
         translation = translations.get(block.block_id)
-        if not translation:
+        failed = block.block_id in failed_block_ids
+        if not translation and not failed:
             continue
         translated_element = translated_table.find(attrs={marker_attr: block.block_id})
         if isinstance(translated_element, Tag):
             translated_element.attrs.pop(marker_attr, None)
-            _replace_element_text(translated_element, translation)
+            if translation:
+                _replace_element_text(translated_element, translation)
+            elif failed:
+                _replace_element_text(translated_element, f"{block.text} {_failure_text()}")
+                _append_class(translated_element, "translation-failed")
 
     for leftover in translated_table.find_all(attrs={marker_attr: True}):
         if isinstance(leftover, Tag):
@@ -216,3 +241,17 @@ def _looks_like_footnote(element: Tag) -> bool:
         if key in {"id", "class", "epub:type", "role"}
     )
     return "footnote" in joined or "endnote" in joined
+
+
+def _failure_text() -> str:
+    return "[Translation failed after retries]"
+
+
+def _mark_failed_element(element: Tag) -> None:
+    _append_class(element, "translation-failed")
+    existing_title = element.get("title")
+    message = _failure_text()
+    element["title"] = f"{existing_title} {message}".strip() if existing_title else message
+    element["data-translation-status"] = "failed"
+    if message not in element.get_text(" ", strip=True):
+        element.append(f" {message}")

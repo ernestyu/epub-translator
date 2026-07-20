@@ -15,9 +15,11 @@ EPUB Translator Web 是一个可本地部署、适合 Docker 运行的 EPUB 双�
 - 任务状态持久化到 `data/jobs/<job_id>/state.json`。
 - 章节级 checkpoint 写入 `data/jobs/<job_id>/translated/`。
 - batch 级 JSON 校验、重试、缓存和保守 JSON 修复。
+- 可验证重试流程：保留合法的部分译文，单独补译缺失 ID，并标记最终失败文本块。
+- 邻居上下文和按 batch 命中的术语表注入，用于提升整本书一致性。
 - 根据 `LLM_CONTEXT_WINDOW` 自动计算 token 批次预算。
 - 支持 OpenAI-compatible Chat Completions API。
-- 任务列表、任务详情、继续任务、重跑失败章节、取消任务、删除任务和输出文件。
+- 任务列表、任务详情、继续任务、重跑失败/警告章节、取消任务、删除任务和输出文件。
 - 生成的 EPUB 保存到 `data/output/`。
 
 ## 快速开始
@@ -99,13 +101,13 @@ volumes:
 构建镜像：
 
 ```bash
-docker build -t epub-translator-web:0.1.5 .
+docker build -t epub-translator-web:0.1.6 .
 ```
 
 运行容器：
 
 ```bash
-docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.5
+docker run --rm -p 7860:7860 --env-file .env -v ./data:/data epub-translator-web:0.1.6
 ```
 
 如果你在 Linux 主机上使用宿主机本地 LLM 服务，需要确保容器能访问 `host.docker.internal`。本项目的 Compose 文件已经包含：
@@ -124,12 +126,13 @@ extra_hosts:
    - 上传 EPUB。
    - 查看真实 EPUB 渲染预览。
    - 选择章节和字符范围进行翻译预览。
+   - 可选填写术语表，每行一个 `source => target`，也可以使用 JSON。
    - 执行整本书翻译，或只翻译当前预览范围。
 
 2. **任务列表**
    - 刷新并选择任务。
    - 查看任务详情和章节状态。
-   - 继续任务、重跑失败章节、取消任务。
+   - 继续任务、重跑失败/警告章节、取消任务。
    - 删除任务及其输出文件。
    - 下载完成后的 EPUB。
 
@@ -167,10 +170,13 @@ extra_hosts:
 3. 按 spine 顺序处理 XHTML 章节。
 4. 从 `p`、`li`、`blockquote`、标题等标签中提取可翻译文本块。
 5. 根据 `LLM_CONTEXT_WINDOW` 自动计算 token 预算并分 batch。
-6. LLM 接收 JSON 输入并返回 JSON 译文。
-7. 程序校验译文 JSON 并插入 XHTML DOM。
-8. 每章完成后写入 checkpoint。
-9. 按 EPUB zip 规范重新打包。
+6. 每个 batch 会附带只读邻居上下文，并只注入当前 batch 命中的术语。
+7. LLM 接收 JSON 输入，并必须返回相同 ID 的 JSON 译文。
+8. 程序校验 JSON、ID 覆盖、重复/多余 ID 和空译文。
+9. 合法的部分译文会被保留，缺失 ID 会单独补译，最终失败的文本块会被标记而不是静默丢弃。
+10. 程序将校验后的译文插入原 XHTML DOM。
+11. 每章完成后写入 checkpoint。
+12. 按 EPUB zip 规范重新打包。
 
 LLM 不会被要求生成 XHTML/XML。
 
@@ -226,7 +232,7 @@ python -m unittest discover -s tests
 
 ## 版本
 
-当前版本：`0.1.5`
+当前版本：`0.1.6`
 
 ## 许可证
 

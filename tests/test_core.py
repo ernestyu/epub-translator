@@ -14,7 +14,8 @@ from app.job_store import JobStore
 from app.models import TextBlock
 from app.packager import _write_epub
 from app.preview import select_blocks_by_char_range
-from app.translator import TranslationValidationError, parse_and_validate
+from app.glossary import match_glossary_terms, parse_glossary
+from app.translator import BatchTranslator, PartialTranslationError, TranslationValidationError, parse_and_validate, parse_and_validate_partial
 import app.worker as worker_module
 
 
@@ -56,10 +57,46 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(TranslationValidationError):
             parse_and_validate(json.dumps({"items": []}), [{"id": "a", "text": "one"}])
 
+    def test_partial_validation_keeps_successful_items_and_reports_missing(self) -> None:
+        result = parse_and_validate_partial(
+            json.dumps({"items": [{"id": "a", "translation": "一"}]}),
+            [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}],
+        )
+        self.assertEqual(result.translations, {"a": "一"})
+        self.assertEqual(result.failed_ids, ["b"])
+
     def test_parse_and_validate_repairs_missing_comma_when_possible(self) -> None:
         raw = '{"items":[{"id":"a","translation":"一"} {"id":"b","translation":"二"}]}'
         result = parse_and_validate(raw, [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}])
         self.assertEqual(result, {"a": "一", "b": "二"})
+
+    def test_batch_translator_retries_only_missing_items_after_partial_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _test_config(Path(tmp) / "data")
+            translator = BatchTranslator(config)
+            translator.client = SequencedClient(
+                [
+                    json.dumps({"items": [{"id": "a", "translation": "T:one"}]}),
+                    json.dumps({"items": [{"id": "b", "translation": "T:two"}]}),
+                ]
+            )
+            blocks = [
+                TextBlock(block_id="a", tag="p", text="one"),
+                TextBlock(block_id="b", tag="p", text="two"),
+            ]
+
+            result = translator.translate_batch(
+                blocks,
+                target_language="Simplified Chinese",
+                mode="append_block",
+                user_prompt=None,
+                max_retries=3,
+            )
+
+            self.assertEqual(result, {"a": "T:one", "b": "T:two"})
+            self.assertEqual(len(translator.client.calls), 2)
+            self.assertIn('"id": "b"', translator.client.calls[1])
+            self.assertNotIn('"id": "a"', translator.client.calls[1])
 
     def test_epub_unpack_spine_extract_insert_and_repackage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,6 +169,18 @@ class CoreTests(unittest.TestCase):
         tables = soup.find_all("table")
         self.assertEqual(len(tables), 1)
         self.assertEqual([cell.get_text(" ", strip=True) for cell in tables[0].find_all("td")], ["T:Alpha", "T:Beta"])
+
+    def test_apply_translations_marks_failed_blocks_without_dropping_original(self) -> None:
+        soup = _parse_xhtml_text(
+            """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Needs translation.</p></body></html>"""
+        )
+        blocks = extract_text_blocks(soup, "chapter_000")
+        apply_translations(soup, blocks, {}, "append_block", failed_block_ids={blocks[0].block_id})
+
+        text = soup.get_text(" ", strip=True)
+        self.assertIn("Needs translation.", text)
+        self.assertIn("Translation failed after retries", text)
 
     def test_table_cells_with_paragraphs_do_not_translate_parent_cell_twice(self) -> None:
         soup = _parse_xhtml_text(
@@ -221,13 +270,80 @@ class CoreTests(unittest.TestCase):
             self.assertNotIn("T:Chapter One", first_chapter)
             self.assertNotIn("T:First item.", first_chapter)
 
+    def test_worker_keeps_failed_unit_with_warning_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "book.epub"
+            _create_sample_epub(source)
+            config = _test_config(tmp_path / "data")
+            store = JobStore(config)
+            job = store.create_job(
+                uploaded_path=source,
+                original_filename="book.epub",
+                source_language="English",
+                target_language="Simplified Chinese",
+                mode="append_block",
+                batch_size=2,
+                max_batch_chars=6000,
+                max_batch_retries=1,
+                chapter_failure_policy="keep_original_on_failed_chapter",
+                user_prompt=None,
+                translate_titles=True,
+                translate_footnotes=True,
+                translate_toc=False,
+            )
+
+            original_translator = worker_module.BatchTranslator
+            worker_module.BatchTranslator = PartiallyFailingBatchTranslator
+            try:
+                worker_module.run_job(config, store, job.job_id)
+            finally:
+                worker_module.BatchTranslator = original_translator
+
+            finished = store.load(job.job_id)
+            self.assertEqual(finished.status, "finished_with_warnings")
+            self.assertGreater(finished.failed_text_blocks, 0)
+            first_chapter = Path(finished.chapters[0].translated_path).read_text(encoding="utf-8")
+            self.assertIn("Translation failed after retries", first_chapter)
+
+    def test_glossary_parser_and_matcher(self) -> None:
+        terms = parse_glossary("Wallfacer => 面壁者\nTrisolaran => 三体人")
+        matched = match_glossary_terms(["The Wallfacer spoke."], terms)
+        self.assertEqual([term.source for term in matched], ["Wallfacer"])
+
 
 class FakeBatchTranslator:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-    def translate_batch(self, blocks, target_language, mode, user_prompt, max_retries):
+    def translate_batch(self, blocks, target_language, mode, user_prompt, max_retries, **kwargs):
         return {block.block_id: f"T:{block.text}" for block in blocks}
+
+
+class PartiallyFailingBatchTranslator:
+    def __init__(self, config: Config) -> None:
+        self.config = config
+
+    def translate_batch(self, blocks, target_language, mode, user_prompt, max_retries, **kwargs):
+        translations = {
+            block.block_id: f"T:{block.text}"
+            for block in blocks
+            if "Hello world" not in block.text
+        }
+        failed_ids = [block.block_id for block in blocks if "Hello world" in block.text]
+        if failed_ids:
+            raise PartialTranslationError("mock failure", translations, failed_ids)
+        return translations
+
+
+class SequencedClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.calls: list[str] = []
+
+    def chat(self, messages):
+        self.calls.append(messages[-1]["content"])
+        return self.responses.pop(0)
 
 
 def _create_sample_epub(path: Path) -> None:

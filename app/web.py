@@ -168,6 +168,7 @@ def create_and_start_job(
     source_language: str,
     target_language: str,
     user_prompt: str,
+    glossary_text: str,
     translation_scope_label: str,
     preview_chapter_label,
     preview_start_char,
@@ -204,6 +205,7 @@ def create_and_start_job(
         translate_toc=False,
         translate_start_block=translate_start_block,
         translate_end_block=translate_end_block,
+        glossary_text=glossary_text,
     )
     message = worker.start(job.job_id, ui_language=CONFIG.ui_language)
     return t("created_job", job_id=job.job_id, message=message), jobs_table(), job.job_id
@@ -220,6 +222,7 @@ def jobs_table():
                 job["status"],
                 f"{job['done_chapters']}/{job['total_chapters']}",
                 f"{job['done_text_blocks']}/{job['total_text_blocks']}",
+                f"{job.get('failed_text_blocks', 0)}/{job.get('warning_text_blocks', 0)}",
                 job["created_at"],
                 job["updated_at"],
                 t("delete_hint"),
@@ -295,6 +298,7 @@ def preview_translation(
     epub_file,
     target_language: str,
     user_prompt: str,
+    glossary_text: str,
     preview_chapter_label,
     preview_start_char,
     preview_char_count,
@@ -320,6 +324,7 @@ def preview_translation(
         translate_titles=CONFIG.default_translate_titles,
         translate_footnotes=CONFIG.default_translate_footnotes,
         config=CONFIG,
+        glossary_text=glossary_text,
     )
     message = t(
         "preview_done",
@@ -446,6 +451,7 @@ def job_detail(job_id: str):
             f"{t('output_mode')}: {job.mode}",
             f"{t('failure_policy')}: {job.chapter_failure_policy}",
             f"{t('chapter_progress')}: {job.done_chapters}/{job.total_chapters}; {t('text_progress')}: {job.done_text_blocks}/{job.total_text_blocks}",
+            f"{t('failed_units')}: {job.failed_text_blocks}; {t('warning_units')}: {job.warning_text_blocks}",
             f"{t('last_error')}: {job.last_error or ''}",
         ]
     )
@@ -456,6 +462,8 @@ def job_detail(job_id: str):
             chapter.title or "",
             chapter.status,
             chapter.text_blocks,
+            chapter.failed_text_blocks,
+            chapter.warning_text_blocks,
             f"{chapter.done_batches}/{chapter.batches}",
             chapter.failed_batches,
             chapter.attempts,
@@ -593,6 +601,7 @@ def switch_ui_language(ui_language: str):
         t("status"),
         t("chapter_progress"),
         t("text_progress"),
+        t("failed_warning_units"),
         t("created_at"),
         t("updated_at"),
         t("action"),
@@ -603,6 +612,8 @@ def switch_ui_language(ui_language: str):
         t("title"),
         t("status"),
         t("text_blocks"),
+        t("failed_units"),
+        t("warning_units"),
         "batch",
         t("failed_batches"),
         t("attempts"),
@@ -620,6 +631,7 @@ def switch_ui_language(ui_language: str):
         gr.update(label=t("source_language")),
         gr.update(label=t("target_language")),
         gr.update(label=t("custom_prompt")),
+        gr.update(label=t("glossary")),
         gr.update(value=f"### {t('preview_group')}"),
         gr.update(value=t("load_preview")),
         gr.update(label=t("preview_summary")),
@@ -683,6 +695,7 @@ def build_ui() -> gr.Blocks:
                 source_language = gr.Dropdown(LANGUAGES, label=t("source_language"), value=CONFIG.default_source_language)
                 target_language = gr.Dropdown(LANGUAGES, label=t("target_language"), value=CONFIG.default_target_language)
             user_prompt = gr.Textbox(label=t("custom_prompt"), lines=4)
+            glossary_text = gr.Textbox(label=t("glossary"), lines=4)
             preview_heading = gr.Markdown(f"### {t('preview_group')}")
             with gr.Group():
                 preview_button = gr.Button(t("load_preview"))
@@ -717,6 +730,7 @@ def build_ui() -> gr.Blocks:
                     t("status"),
                     t("chapter_progress"),
                     t("text_progress"),
+                    t("failed_warning_units"),
                     t("created_at"),
                     t("updated_at"),
                     t("action"),
@@ -740,6 +754,8 @@ def build_ui() -> gr.Blocks:
                     t("title"),
                     t("status"),
                     t("text_blocks"),
+                    t("failed_units"),
+                    t("warning_units"),
                     "batch",
                     t("failed_batches"),
                     t("attempts"),
@@ -793,6 +809,7 @@ def build_ui() -> gr.Blocks:
                 source_language,
                 target_language,
                 user_prompt,
+                glossary_text,
                 translation_scope,
                 preview_chapter,
                 preview_start_char,
@@ -816,6 +833,7 @@ def build_ui() -> gr.Blocks:
                 epub_file,
                 target_language,
                 user_prompt,
+                glossary_text,
                 preview_chapter,
                 preview_start_char,
                 preview_char_count,
@@ -867,6 +885,7 @@ def build_ui() -> gr.Blocks:
                 source_language,
                 target_language,
                 user_prompt,
+                glossary_text,
                 preview_heading,
                 preview_button,
                 epub_preview_summary,

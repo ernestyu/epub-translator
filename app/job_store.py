@@ -33,6 +33,7 @@ class JobStore:
         translate_toc: bool,
         translate_start_block: int | None = None,
         translate_end_block: int | None = None,
+        glossary_text: str | None = None,
     ) -> JobState:
         job_id = f"{compact_ts()}-{uuid.uuid4().hex[:8]}"
         job_dir = self.config.jobs_dir / job_id
@@ -104,6 +105,7 @@ class JobStore:
             translate_toc=translate_toc,
             translate_start_block=translate_start_block,
             translate_end_block=translate_end_block,
+            glossary_text=glossary_text.strip() if glossary_text and glossary_text.strip() else None,
             created_at=created_at,
             updated_at=created_at,
             total_chapters=len(chapters),
@@ -150,6 +152,8 @@ class JobStore:
                     "total_chapters": data.get("total_chapters", len(data.get("chapters", []))),
                     "done_text_blocks": data.get("done_text_blocks", 0),
                     "total_text_blocks": data.get("total_text_blocks", 0),
+                    "failed_text_blocks": data.get("failed_text_blocks", 0),
+                    "warning_text_blocks": data.get("warning_text_blocks", 0),
                     "created_at": data.get("created_at", ""),
                     "updated_at": data.get("updated_at", ""),
                 }

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.6 - 2026-07-20
+
+### Added
+
+- Added EPUB-only reliability SPEC for verifiable translation retries without introducing a unified multi-format document model.
+- Added partial LLM response handling so valid translated items are preserved while missing IDs are retried separately.
+- Added batch split and single-unit failure propagation with failed text block IDs.
+- Added neighbor context and per-batch glossary term injection to improve translation consistency.
+- Added optional glossary input in the New Translation flow.
+- Added failed/warning text block counters in job summaries and chapter details.
+
+### Changed
+
+- Translation preview now uses the same context, glossary, partial retry, and failed-unit marker flow as full jobs.
+- Jobs that keep original text after unit-level failures now finish as `finished_with_warnings` instead of normal `finished`.
+- README and Chinese README now document verifiable retries, glossary input, and version `0.1.6`.
+
+### Fixed
+
+- Prevented successful translations in a partially valid LLM response from being discarded when other IDs are missing.
+- Prevented stubborn unit-level translation failures from being silently omitted in generated EPUB output.
+
 ## 0.1.5 - 2026-07-09
 
 ### Changed
